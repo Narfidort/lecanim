@@ -1,0 +1,26 @@
+[project]
+course = "グラフ理論（お手本）"
+series = "グラフ理論"
+
+[project.lectures.ramsey]
+title = "R(3,3)=6 - 6人いれば必ず…【グラフ理論 お手本】"
+summary = """
+完全グラフ K6 の辺を赤と青で塗ると，必ず単色の三角形が現れることを，頂点の仕分けと総当たりで証明します．
+"""
+
+[project.lectures.hamilton]
+title = "Oreの定理 - ハミルトン道を回転させて閉路にする【グラフ理論 お手本】"
+summary = """
+非隣接な2頂点の次数和が n 以上ならハミルトン閉路がある（Oreの定理）を，印と枠・切って裏返す操作で証明します．
+"""
+
+[voice]
+speaker = 8
+speed = 1.1
+url = "http://127.0.0.1:50021"
+
+[style]
+jp_font = "Noto Sans CJK JP"
+
+[remote]
+host = ""

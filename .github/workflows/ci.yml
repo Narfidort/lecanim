@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: system packages
+        run: sudo apt-get update && sudo apt-get install -y libcairo2-dev libpango1.0-dev pkg-config ffmpeg
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --group dev --python 3.13
+      - run: uv run pytest -q
+
+  examples:
+    # お手本シーンを音声なしで空実行し，レイアウト警告・台本の不足がないことを確かめる
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: system packages (LaTeX, cairo, fonts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libcairo2-dev libpango1.0-dev pkg-config ffmpeg \
+            texlive-latex-base texlive-latex-recommended texlive-latex-extra texlive-fonts-recommended \
+            texlive-fonts-extra texlive-science tipa cm-super dvisvgm fonts-noto-cjk
+      - uses: astral-sh/setup-uv@v6
+      - name: dry-run all examples (strict)
+        env:
+          VOICE: "0"
+        run: |
+          for d in examples/*/; do
+            echo "== $d"
+            (cd "$d" && uv sync --python 3.13 && uv run lecanim beats --strict -j 2) || exit 1
+          done

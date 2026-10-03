@@ -1,0 +1,39 @@
+# lecanim プロジェクト設定
+[project]
+course = "{{COURSE}}"          # 題名
+series = "{{SERIES}}"          # YouTube タイトルの【{{SERIES}} #N】に使う
+
+# 回ごとの YouTube タイトル・概要（lecanim youtube が説明文を作る）
+[project.lectures.lecture1]
+title = "トピック - 主な定理【{{SERIES}} #1】"
+summary = """
+この回で扱う内容を2〜4行で．
+・定理A：…
+・定理B：…
+"""
+
+[voice]
+speaker = 8        # 8 = 春日部つむぎ（台本の口調もこの話者のアカデミックな発表調に合わせる）
+speed = 1.1
+url = "http://127.0.0.1:50021"
+
+[render]
+jobs = 3           # 並列レンダリング数の上限
+mem_per_job_gb = 4.0  # 1080p のシーン1本が使うメモリの見込み．並列数は「空きメモリ ÷ これ」以下に自動で絞る
+min_free_gb = 2.0     # 空きメモリがこれ未満なら次のシーンを待つ
+encoder = "auto"      # auto: NVIDIA GPU があれば h264_nvenc，なければ libx264 veryfast（"x264" で manim 既定）
+vfr_still = true      # 静止区間（wait）を2フレーム＋時刻の飛びで書く．ナレーション付き動画で大幅に速くなる
+
+[style]
+jp_font = "Noto Sans CJK JP"   # macOS と Linux の両方に入れられるフォント．リモートレンダリングでも同じ見た目になる
+
+[remote]
+host = ""                # lecanim render --remote の実行先（~/.ssh/config のホスト名．空なら無効）
+root = "~/lecanim-remote"
+jobs = 8                 # リモートの並列数の上限（実際はリモートの空きメモリに応じて自動で抑える）
+
+[youtube]
+footer = """
+【制作】Manim（Python）でアニメーションを作成し，台本・シーンの作成に AI（Claude）を利用しています．
+内容に誤りがありましたらコメントでお知らせください．
+"""

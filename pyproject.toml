@@ -1,0 +1,30 @@
+[project]
+name = "lecanim"
+version = "0.1.0"
+description = "数学の定義・定理・証明を Manim + VOICEVOX で解説動画にするための制作基盤"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "manim>=0.21.0",
+    "networkx>=3.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.urls]
+Repository = "https://github.com/Narfidort/lecanim"
+
+[project.scripts]
+lecanim = "lecanim.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lecanim"]
