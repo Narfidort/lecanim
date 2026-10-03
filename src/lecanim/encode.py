@@ -4,9 +4,11 @@ manim は部分動画（play ごとの mp4）のエンコーダーを libx264（
 1080p60 ではエンコードがレンダリング時間の約3割を占めるので，ハードウェアエンコーダーに差し替える．
 
 lecanim.toml の [render] encoder:
-  "auto"（既定）  NVIDIA GPU があれば h264_nvenc，なければ libx264 veryfast
-                  （実測：nk RTX 5060 Ti で NVENC は既定比 −33%．Apple M3 では VideoToolbox はむしろ遅く，
-                   x264 veryfast が既定比 −11% で最速だった．図形アニメはフレームが単純で x264 が軽いため）
+  "auto"（既定）  libx264 veryfast
+                  （実測：nk RTX 5060 Ti・ナレーション付き 1080p60 の約4分のシーンで，manim 既定 204 秒，NVENC 124 秒，
+                   x264 veryfast＋静止区間 VFR 50 秒，NVENC＋VFR 69 秒．図形アニメはフレームが単純で x264 が軽く，
+                   NVENC は play ごとにセッションを開くコストが大きい．さらに run_time の短い play が続くシーンで
+                   segfault することがあるので，NVENC は明示指定のときだけ使う）
   "videotoolbox" / "nvenc" / "x264-fast" / "x264"（manim 既定のまま）
 環境変数 LECANIM_ENCODER で上書きできる．
 """
@@ -14,7 +16,6 @@ lecanim.toml の [render] encoder:
 from __future__ import annotations
 
 import os
-import sys
 
 import av
 
@@ -59,7 +60,7 @@ def choose() -> tuple[str, dict] | None:
     want = os.environ.get("LECANIM_ENCODER") or CFG["render"].get("encoder", "auto")
     cands = []
     if want == "auto":
-        cands += ([] if sys.platform == "darwin" else ["nvenc"]) + ["x264-fast"]
+        cands.append("x264-fast")
     elif want != "x264":
         cands.append(want)
     for name in cands:

@@ -92,8 +92,9 @@ uv run lecanim render lecture6 -q h --remote
 - 条件：`lecanim.toml` の `[style] jp_font` が両方にあるフォント（既定の雛形は Noto Sans CJK JP）。
   未設定（macOS は Hiragino）だと字形が変わるので拒否する（`--allow-font-mismatch` で無視）。
 - 初回だけリモートでシステムパッケージのインストールが必要（`lecanim remote setup` が sudo のコマンドを表示する）。
-- 速度：NVIDIA GPU があれば NVENC でエンコードし，静止区間は可変フレームレートで書く（`[render] encoder` / `vfr_still`）。
-  実測（RTX 5060 Ti，ナレーション付き 1080p60・約4分のシーン）：manim 既定 221 秒 → NVENC 57 秒 → ＋静止区間 VFR 29 秒。
+- 速度：エンコードは libx264 veryfast，静止区間は可変フレームレートで書く（`[render] encoder` / `vfr_still`）。
+  実測（RTX 5060 Ti，ナレーション付き 1080p60・約4分のシーン）：manim 既定 204 秒 → 50 秒。
+  NVENC（`encoder = "nvenc"`）は 69 秒と遅く，短い play が続くシーンで segfault することがあるので既定にしない。
 
 ## 5. 仕上げ
 

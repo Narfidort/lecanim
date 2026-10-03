@@ -21,7 +21,7 @@ url = "http://127.0.0.1:50021"
 jobs = 3           # 並列レンダリング数の上限
 mem_per_job_gb = 4.0  # 1080p のシーン1本が使うメモリの見込み．並列数は「空きメモリ ÷ これ」以下に自動で絞る
 min_free_gb = 2.0     # 空きメモリがこれ未満なら次のシーンを待つ
-encoder = "auto"      # auto: NVIDIA GPU があれば h264_nvenc，なければ libx264 veryfast（"x264" で manim 既定）
+encoder = "auto"      # auto: libx264 veryfast．"x264" で manim 既定，"nvenc" は不安定なので非推奨
 vfr_still = true      # 静止区間（wait）を2フレーム＋時刻の飛びで書く．ナレーション付き動画で大幅に速くなる
 
 [style]
