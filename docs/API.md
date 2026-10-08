@@ -18,7 +18,7 @@ class MyScene(LectureScene):
 | メソッド | 役割 | 台本のキー |
 |---|---|---|
 | `title_card(title, subtitle)` | 冒頭のタイトル | `title:` |
-| `phase(kind, title)` | 見出し切替．kind = motivation / definition / example / proof | `phase:<title>` |
+| `phase(kind, title)` | 見出し切替．kind = motivation / definition / example / proof，実験の回は observe / question / experiment / result | `phase:<title>` |
 | `note(text, block=True)` | 画面下の字幕．`block=False` で読み上げ中に次へ（後で `wait_voice()`） | `note:<text>` |
 | `define(sym, meaning, target=, math=True, short=)` | 記号・用語を指し示して記号メモへ．`short` はメモ用の短い説明 | `def:<sym>` |
 | `recall(sym)` | 記号メモの該当項目を光らせる | — |
@@ -32,7 +32,11 @@ class MyScene(LectureScene):
 | `clear_body(keep=())` | ヘッダ・記号メモ以外を消す | — |
 | `end_card(*points)` | まとめ（各項目を読み上げ，クレジット表示） | `summary:`, `end:<point>`, `outro:` |
 
-テキスト部品（`lecanim.style`）：`row("日本語 $x^2$ 混在", size=, color=)`，`lines(...)`，`theorem(title, *rows)`，
+テーマ：`lecanim.toml` の `[style] theme`。`"classic"`（既定．丸い色付きチップ）／`"sharp"`（無彩色の地＋青・琥珀・赤・緑の4色，
+角を立てた見出し・吹き出し，左寄せのタイトル）。色の名前（`BLUE_E` など）はテーマごとに値が変わる。
+テーマの値：`ACCENT`（強調色），`CAPTION`（字幕の色），`LINE`（罫線），`CORNER`（角の丸み）。
+
+テキスト部品（`lecanim.style`）：`row("日本語 $x^2$ 混在", size=, color=, weight=)`，`lines(...)`，`theorem(title, *rows)`，
 `boxed(m, title)`，`jp`, `mt`。色：`FG, DIM, RED_E, BLUE_E, GREEN_E, YELLOW_E, PURPLE_E, ORANGE_E, ECOL`。
 
 ## 配置（`lecanim.layout`，コア）
@@ -62,6 +66,30 @@ class MyScene(LectureScene):
   - `set_arcs({...})`（曲線の辺を設定し直す），`to_scene(p)`（元座標→画面座標）
 - `colored_graph_mob(coloring, pos, box=)`：EdgeColoring をそのまま色付きで描く
 - 読み辞書：閉路・次数・彩色・出次数・強連結…，人名（Ramsey, Ore, Kempe…）を import 時に登録
+
+## 推論サービング（`lecanim.domains.serving`）
+
+LLM 推論の GPU 配置・P/D 分離・遅延の内訳・性能曲線。お手本は `examples/serving/topology.py`。
+
+- データ構造（すべて assert で検証できる）
+  - `Worker(name, role, gpus, tp, ep, dp_attention)`：role は `"P"`（Prefill）/ `"D"`（Decode）/ `"A"`（両方）
+  - `Deployment(workers, nodes=2, gpus_per_node=8)`：`check()`（重複・範囲外・TP と GPU 数の不一致），`ok`, `free()`,
+    `of(role)`, `gpus_of(role)`, `label`（`"4P2D"`）．`Deployment.pack([("P", 2, 2)] * 4 + [("D", 4, 4)] * 2)` で前から詰めて割り当て
+  - `SLO(ttft_ms=3000, itl_ms=20, min_rate=0.9)`，`Measurement(c, good_tok_s, good_rate, itl_ms=, ttft_ms=, total_tok_s=)`，
+    `Sweep(name, points)`：`best(slo)`, `first_fail(slo)`
+  - `Breakdown([(名前, 値), ...], unit="µs")`：`total`, `share(name)`, `replace(**値)`（0 で区間が消える）
+- 描画（操作は Animation のリスト）
+  - `ClusterMob(dep, box=)`：ノード × GPU の四角と担当の枠．`cm.gpu[(n, i)]`, `cm.wbox[name]`．
+    `create()`, `reassign(new_dep)`（同名の担当は変形），`highlight(names, color)`, `unhighlight()`,
+    `tag(name, text)`（枠に追従する注記），`role_legend()`
+  - `StackBarMob(bd, length=, ref_total=)`：横向き積み上げ棒．長さは `ref_total` に対する比率なので，
+    `morph_to(new_bd)` で短くなったことが見える．`highlight(name)`, `unhighlight()`
+  - `ChartMob(x_range, y_range, x_label=, y_label=, box=)`：`plot(key, pts, color, label=, fail=[番号])`（不合格点は中抜き），
+    `hline(key, y, label)`（上限線），`vline`, `ring(key, i)`（点を丸で囲む重ね描き）
+  - `TimelineMob(lanes, t_max, box=, ticks=)`：ガント図．`bar(lane, t0, t1, color, label)` で棒を作り `grow(bars)` で伸ばす
+- 色：`ROLE_COLOR`（P＝オレンジ，D＝青，A＝紫）．読み辞書：Prefill, Decode, TTFT, ITL, GPU, MoE, GEMM, AllReduce, 律速…
+
+`end_card(*points, title=)` で，まとめの見出しを「証明の構造まとめ」以外にできる（実験の動画では「観察のまとめ」など）。
 
 ## 新しい分野
 

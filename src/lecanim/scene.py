@@ -23,7 +23,8 @@ from .units import LiveGroup, mark_overlay  # noqa: F401
 from . import encode as _encode
 
 _encode.install()   # 部分動画のエンコードをハードウェア（VideoToolbox / NVENC）に
-from .style import BG, BODY_TOP, DIM, FG, GLOSS_Y, PHASES, YELLOW_E, jp, mt, row
+from .style import (ACCENT, BG, BODY_TOP, CAPTION, CORNER, DIM, FG, GLOSS_Y, LINE, PHASES, THEME, YELLOW_E,
+                    jp, mt, row)
 
 # エンジンの有無は起動時に判定しない（混雑時に誤って無音になるため）．合成済みはキャッシュ，未合成は合成時に接続する
 VOICE_ON = _voice.ENABLED
@@ -57,15 +58,25 @@ class LectureScene(Scene):
     # --- header -----------------------------------------------------------
     def phase(self, key: str, title: str = "", wait=0.4):
         label, color = PHASES[key]
-        chip_t = jp(label, size=24, color=BG, weight=BOLD)
-        chip = RoundedRectangle(corner_radius=0.15, width=chip_t.width + 0.4,
-                                height=chip_t.height + 0.25, fill_color=color,
-                                fill_opacity=1, stroke_width=0)
-        chip_t.move_to(chip)
-        chip_g = VGroup(chip, chip_t).to_corner(UL, buff=0.32)
-        ttl = row(title, size=32).next_to(chip_g, RIGHT, buff=0.3)
-        bar = Line(LEFT * 7, RIGHT * 7, color=color, stroke_width=2).next_to(
-            chip_g, DOWN, buff=0.15).set_x(0)
+        if THEME == "sharp":
+            lab = jp(label, size=20, color=color, weight=BOLD)
+            tick = Line(UP * 0.2, DOWN * 0.2, color=color, stroke_width=3)
+            chip_g = VGroup(lab, tick).arrange(RIGHT, buff=0.22).to_corner(UL, buff=0.36)
+            ttl = row(title, size=30).next_to(chip_g, RIGHT, buff=0.24)
+            rule = Line(LEFT * 7, RIGHT * 7, color=LINE, stroke_width=1.5).next_to(chip_g, DOWN, buff=0.2).set_x(0)
+            seg = Line(rule.get_left(), rule.get_left() + RIGHT * (chip_g.get_right()[0] + 7.0), color=color,
+                       stroke_width=3)
+            bar = VGroup(rule, seg)
+        else:
+            chip_t = jp(label, size=24, color=BG, weight=BOLD)
+            chip = RoundedRectangle(corner_radius=0.15, width=chip_t.width + 0.4,
+                                    height=chip_t.height + 0.25, fill_color=color,
+                                    fill_opacity=1, stroke_width=0)
+            chip_t.move_to(chip)
+            chip_g = VGroup(chip, chip_t).to_corner(UL, buff=0.32)
+            ttl = row(title, size=32).next_to(chip_g, RIGHT, buff=0.3)
+            bar = Line(LEFT * 7, RIGHT * 7, color=color, stroke_width=2).next_to(
+                chip_g, DOWN, buff=0.15).set_x(0)
         lim = 6.9
         if ttl.get_right()[0] > lim:
             ttl.scale_to_fit_width(lim - ttl.get_left()[0]).align_to(chip_g.get_right() + RIGHT * 0.3, LEFT)
@@ -129,10 +140,10 @@ class LectureScene(Scene):
             if rest > 0.02:
                 self.wait(rest)
 
-    def note(self, text: str, wait: float | None = None, color=YELLOW_E, say: str | None = None,
+    def note(self, text: str, wait: float | None = None, color=None, say: str | None = None,
              block: bool = True):
         """字幕＋ナレーション. say を与えると読み上げだけ別の文にできる."""
-        new = row(text, size=24, color=color)
+        new = row(text, size=24, color=color or CAPTION)
         if new.width > 13:
             new.scale_to_fit_width(13)
         bg = BackgroundRectangle(new, color=BG, fill_opacity=0.85, buff=0.12)
@@ -349,8 +360,9 @@ class LectureScene(Scene):
 
     # --- 記号・用語の導入（指し示してから記号メモへ）------------------
     def define(self, sym: str, meaning: str, target: Mobject | None = None, math: bool = True,
-               color=YELLOW_E, hold: float | None = None, short: str | None = None):
+               color=None, hold: float | None = None, short: str | None = None):
         """記号/用語を初出で導入する: 大きな吹き出しで対象を矢印で指し → 上部の記号メモに収納."""
+        color = color or ACCENT
         s_ = f"${sym}$" if math else sym
         big = row(s_, "：", meaning, size=30, color=color)
         if target is not None and big.width > 6.4:   # 図の横の空きに収まるよう「記号：」と意味の2行に折り返す
@@ -365,7 +377,7 @@ class LectureScene(Scene):
                          ).arrange(DOWN, buff=0.14, aligned_edge=LEFT)
             if big.width > 6.4:
                 big.scale_to_fit_width(6.4)
-        bg = SurroundingRectangle(big, color=color, buff=0.18, corner_radius=0.12, stroke_width=2)
+        bg = SurroundingRectangle(big, color=color, buff=0.18, corner_radius=CORNER, stroke_width=2)
         bg.set_fill(BG, opacity=0.92)
         call = VGroup(bg, big)
         if call.width > 12.5:
@@ -550,21 +562,35 @@ class LectureScene(Scene):
                   run_time=run_time)
 
     def title_card(self, title: str, subtitle: str = ""):
-        t = row(title, size=48)
-        g = VGroup(t)
-        if subtitle:
-            g.add(row(subtitle, size=28, color=DIM))
-        g.arrange(DOWN, buff=0.35)
+        if THEME == "sharp":
+            g = VGroup(row(title, size=46, weight=BOLD))
+            if subtitle:
+                g.add(row(subtitle, size=26, color=DIM))
+            g.arrange(DOWN, buff=0.3, aligned_edge=LEFT)
+            series = jp(self.lecture, size=20, color=ACCENT, weight=BOLD) if self.lecture else None
+            if series is not None:
+                g = VGroup(series, *g).arrange(DOWN, buff=0.3, aligned_edge=LEFT)
+            g.move_to(ORIGIN).to_edge(LEFT, buff=1.4)
+            bar = Line(g.get_corner(UL) + LEFT * 0.35 + UP * 0.1, g.get_corner(DL) + LEFT * 0.35 + DOWN * 0.1,
+                       color=ACCENT, stroke_width=4)
+            g = VGroup(bar, g)
+        else:
+            t = row(title, size=48)
+            g = VGroup(t)
+            if subtitle:
+                g.add(row(subtitle, size=28, color=DIM))
+            g.arrange(DOWN, buff=0.35)
         self.speak(title, kind="title")
         self.play(FadeIn(g, shift=UP * 0.3), run_time=1)
         self.wait_voice(0.2) if VOICE_ON else self.wait(1.2)
         self.play(FadeOut(g), run_time=0.6)
 
-    def end_card(self, *points: str):
+    def end_card(self, *points: str, title: str = "証明の構造まとめ"):
         self.clear_body()
-        self.phase("summary", "証明の構造まとめ")
+        self.phase("summary", title)
         items = VGroup(*[row(p) if isinstance(p, str) else p for p in points])
-        items = VGroup(*[VGroup(jp(f"{i + 1}.", size=28, color=YELLOW_E), it).arrange(RIGHT, buff=0.2)
+        items = VGroup(*[VGroup(jp(f"{i + 1:02d}" if THEME == "sharp" else f"{i + 1}.", size=28, color=ACCENT,
+                                   weight=BOLD if THEME == "sharp" else NORMAL), it).arrange(RIGHT, buff=0.25 if THEME == "sharp" else 0.2)
                          for i, it in enumerate(items)])
         items.arrange(DOWN, buff=0.35, aligned_edge=LEFT).move_to(ORIGIN + DOWN * 0.1)
         if items.width > 13:

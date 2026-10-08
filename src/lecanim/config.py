@@ -20,7 +20,8 @@ DEFAULTS = {
     "render": {"jobs": 3, "min_free_gb": 2.0, "mem_per_job_gb": 4.0, "encoder": "auto", "vfr_still": True},
     # 日本語フォント．空なら macOS は Hiragino Sans，それ以外は Noto Sans CJK JP．
     # ローカルとリモートで同じ見た目にしたいときは両方にあるフォント（Noto Sans CJK JP）を指定する
-    "style": {"jp_font": ""},
+    # theme: "classic"（丸い色付きチップ）/ "sharp"（無彩色＋4色・角を立てた見出し）
+    "style": {"jp_font": "", "theme": "classic"},
     # リモートレンダリング（lecanim render --remote）
     "remote": {"host": "", "root": "~/lecanim-remote", "jobs": 8},
     "youtube": {"footer": ""},

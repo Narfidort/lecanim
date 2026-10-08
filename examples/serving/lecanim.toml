@@ -1,0 +1,21 @@
+[project]
+course = "LLM推論サービング（お手本）"
+series = "LLM推論サービング"
+
+[project.lectures.topology]
+title = "16 GPUをどう分けるか - PrefillとDecodeの律速が入れ替わる【推論サービング お手本】"
+summary = """
+16枚のGPUを入力処理（Prefill）と生成処理（Decode）の担当へ分ける配置を組み替え，律速がどちらへ移るかを実測値で確かめます．
+"""
+
+[voice]
+speaker = 8
+speed = 1.1
+url = "http://127.0.0.1:50021"
+
+[style]
+jp_font = "Noto Sans CJK JP"
+theme = "sharp"
+
+[remote]
+host = ""
