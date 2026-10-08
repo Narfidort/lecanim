@@ -585,6 +585,43 @@ class LectureScene(Scene):
         self.wait_voice(0.2) if VOICE_ON else self.wait(1.2)
         self.play(FadeOut(g), run_time=0.6)
 
+    def agenda(self, items: list[str], current: int | None = None, done=(), title: str = "問い"):
+        """問いの一覧. current=None なら全項目を順に読み上げて並べる（台本キー q:<項目>）.
+        current=i なら一覧を出して i 番目だけを強調し, その項目を読み上げてから消す（各ブロックの冒頭用）."""
+        done = set(done)
+        rows_ = VGroup()
+        for i, it in enumerate(items):
+            on = current is None or i == current
+            col = ACCENT if i == current else (DIM if (i in done or not on) else FG)
+            num = jp(f"Q{i + 1}", size=34, color=ACCENT if on else DIM, weight=BOLD)
+            body = row(it, size=34, color=col)
+            mark = jp("✓", size=30, color=DIM) if i in done else VGroup()
+            rows_.add(VGroup(num, body, mark).arrange(RIGHT, buff=0.3))
+        rows_.arrange(DOWN, buff=0.55, aligned_edge=LEFT)
+        if rows_.width > 12.5:
+            rows_.scale_to_fit_width(12.5)
+        rows_.move_to(DOWN * 0.15).to_edge(LEFT, buff=1.2)
+        if current is None:
+            self.speak(title, kind="agenda")
+            for r, it in zip(rows_, items):
+                self.wait_voice(0.1)
+                self.speak(it, kind="q")
+                self.play(FadeIn(r, shift=RIGHT * 0.2), run_time=0.5)
+                self.wait_voice(0.2) if VOICE_ON else self.wait(1.0)
+            self.wait(0.8)
+            self.play(FadeOut(rows_), run_time=0.5)
+            return rows_
+        self.play(FadeIn(rows_), run_time=0.5)
+        bar = Line(rows_[current].get_corner(UL) + LEFT * 0.25, rows_[current].get_corner(DL) + LEFT * 0.25,
+                   color=ACCENT, stroke_width=4)
+        self.overlay(bar)
+        self.wait_voice(0.1)
+        self.speak(items[current], kind="q")
+        self.play(Create(bar), Indicate(rows_[current][1], color=ACCENT, scale_factor=1.05), run_time=0.7)
+        self.wait_voice(0.3) if VOICE_ON else self.wait(1.4)
+        self.play(FadeOut(rows_), FadeOut(bar), run_time=0.5)
+        return rows_
+
     def end_card(self, *points: str, title: str = "証明の構造まとめ"):
         self.clear_body()
         self.phase("summary", title)

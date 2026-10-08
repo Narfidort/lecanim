@@ -18,7 +18,7 @@ class MyScene(LectureScene):
 | メソッド | 役割 | 台本のキー |
 |---|---|---|
 | `title_card(title, subtitle)` | 冒頭のタイトル | `title:` |
-| `phase(kind, title)` | 見出し切替．kind = motivation / definition / example / proof，実験の回は observe / question / experiment / result | `phase:<title>` |
+| `phase(kind, title)` | 見出し切替．kind = motivation / definition / example / proof，実験の回は observe / question / experiment / result / claim（言えること） | `phase:<title>` |
 | `note(text, block=True)` | 画面下の字幕．`block=False` で読み上げ中に次へ（後で `wait_voice()`） | `note:<text>` |
 | `define(sym, meaning, target=, math=True, short=)` | 記号・用語を指し示して記号メモへ．`short` はメモ用の短い説明 | `def:<sym>` |
 | `recall(sym)` | 記号メモの該当項目を光らせる | — |
@@ -30,6 +30,7 @@ class MyScene(LectureScene):
 | `overlay(*mobs)` | 重なり検査の対象外にする（ハイライト等） | — |
 | `unit(vgroup)` | 部品ごとにアニメした図を1まとまりとして扱う | — |
 | `clear_body(keep=())` | ヘッダ・記号メモ以外を消す | — |
+| `agenda(items, current=, done=)` | 問いの一覧．`current=None` で全項目を順に並べ，`current=i` で i 番目を強調（ブロックの冒頭） | `agenda:`, `q:<項目>` |
 | `end_card(*points)` | まとめ（各項目を読み上げ，クレジット表示） | `summary:`, `end:<point>`, `outro:` |
 
 テーマ：`lecanim.toml` の `[style] theme`。`"classic"`（既定．丸い色付きチップ）／`"sharp"`（無彩色の地＋青・琥珀・赤・緑の4色，

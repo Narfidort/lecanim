@@ -31,7 +31,8 @@ if THEME == "sharp":
     PALETTE = [BLUE_E, ORANGE_E, GREEN_E, RED_E, PURPLE_E, DIM]
     PHASES = {k: (v, ACCENT) for k, v in {
         "motivation": "問い", "definition": "定義", "example": "実験", "proof": "証明", "summary": "まとめ",
-        "observe": "観察", "question": "問い", "experiment": "実験", "result": "結果"}.items()}
+        "observe": "観察", "question": "問い", "experiment": "実験", "result": "結果",
+        "claim": "言えること"}.items()}
 else:
     BG = "#15161c"
     FG = "#ECEFF4"
@@ -57,6 +58,7 @@ else:
         "question": ("問い", "#ff9f43"),
         "experiment": ("実験", "#5fd38d"),
         "result": ("結果", "#4ea8ff"),
+        "claim": ("言えること", "#ffd166"),
     }
 
 config.background_color = BG
