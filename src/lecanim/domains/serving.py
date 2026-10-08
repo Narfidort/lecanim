@@ -33,7 +33,7 @@ from ..style import BLUE_E, CORNER, DIM, FG, GREEN_E, JP_FONT, LINE, ORANGE_E, P
 from ..units import LiveGroup, mark_overlay
 
 __all__ = ["Worker", "Deployment", "SLO", "Measurement", "Sweep", "Breakdown", "MoEModel",
-           "ExpertGridMob", "LayerStackMob",
+           "ExpertGridMob", "LayerStackMob", "HeatmapMob",
            "ClusterMob", "StackBarMob", "ChartMob", "TimelineMob", "ROLE_COLOR"]
 
 YOMI = [("Prefill", "プリフィル"), ("Decode", "デコード"), ("TTFT", "ティーティーエフティー"),
@@ -829,3 +829,51 @@ class LayerStackMob(LiveGroup):
             self.trail.set_z_index(4)
             anims.append(Create(self.trail, run_time=run_time + 0.2))
         return anims
+
+
+class HeatmapMob(LiveGroup):
+    """行×列の値を色の濃さで描く表（例：配置 × 同時要求数 C の good output）.
+    mask[i][j] が True のマスは「条件を満たさない」として赤い斜線の薄い色で描く.
+
+    hm.cell[(i, j)] -> マスの四角
+    """
+
+    def __init__(self, rows: Sequence[str], cols: Sequence, values: Sequence[Sequence[float]],
+                 mask: Sequence[Sequence[bool]] | None = None, vmin: float | None = None, vmax: float | None = None,
+                 color=GREEN_E, cell_w: float = 0.62, cell_h: float = 0.5, box: Box | None = None,
+                 label_size: float = 18, show_values: bool = False, fmt: str = "{:.0f}"):
+        super().__init__()
+        flat = [v for r, row in enumerate(values) for c, v in enumerate(row) if not (mask and mask[r][c])]
+        vmin = min(flat) if vmin is None else vmin
+        vmax = max(flat) if vmax is None else vmax
+        self.cell: dict = {}
+        self.cells_g, self.labs_g = VGroup(), VGroup()
+        for i, row in enumerate(values):
+            for j, v in enumerate(row):
+                bad = bool(mask and mask[i][j])
+                t = 0 if vmax == vmin else max(0.0, min(1.0, (v - vmin) / (vmax - vmin)))
+                r = Rectangle(width=cell_w, height=cell_h, stroke_color=LINE, stroke_width=1)
+                if bad:
+                    r.set_fill(RED_E, opacity=0.12)
+                else:
+                    r.set_fill(color, opacity=0.08 + 0.82 * t)
+                r.move_to([j * cell_w, -i * cell_h, 0])
+                self.cell[(i, j)] = r
+                self.cells_g.add(r)
+                if show_values and not bad:
+                    self.labs_g.add(_txt(fmt.format(v), label_size * 0.7, FG).move_to(r))
+        self.row_labels = VGroup(*[_txt(str(n), label_size, FG).next_to(self.cell[(i, 0)], LEFT, buff=0.15)
+                                   for i, n in enumerate(rows)])
+        self.col_labels = VGroup(*[_txt(str(c), label_size * 0.85, DIM).next_to(self.cell[(0, j)], UP, buff=0.1)
+                                   for j, c in enumerate(cols)])
+        self.add(self.cells_g, self.labs_g, self.row_labels, self.col_labels)
+        _place_in_box(self, box, grow=box is not None)
+
+    def create(self, run_time=1.5):
+        return AnimationGroup(FadeIn(self.row_labels), FadeIn(self.col_labels),
+                              LaggedStart(*[FadeIn(c) for c in self.cells_g], lag_ratio=min(0.02, 1 / len(self.cells_g)),
+                                          run_time=run_time), FadeIn(self.labs_g), lag_ratio=0.2)
+
+    def ring(self, i: int, j: int, color=YELLOW_E) -> Rectangle:
+        """マス (i, j) を枠で囲む（重ね描き扱い）."""
+        return mark_overlay(SurroundingRectangle(self.cell[(i, j)], buff=0.02, color=color, stroke_width=4))

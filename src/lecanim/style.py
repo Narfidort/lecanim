@@ -32,7 +32,7 @@ if THEME == "sharp":
     PHASES = {k: (v, ACCENT) for k, v in {
         "motivation": "問い", "definition": "定義", "example": "実験", "proof": "証明", "summary": "まとめ",
         "observe": "観察", "question": "問い", "experiment": "実験", "result": "結果",
-        "claim": "言えること"}.items()}
+        "claim": "言えること", "model": "モデル", "check": "照合"}.items()}
 else:
     BG = "#15161c"
     FG = "#ECEFF4"
@@ -59,6 +59,8 @@ else:
         "experiment": ("実験", "#5fd38d"),
         "result": ("結果", "#4ea8ff"),
         "claim": ("言えること", "#ffd166"),
+        "model": ("モデル", "#c77dff"),
+        "check": ("照合", "#5fd38d"),
     }
 
 config.background_color = BG
