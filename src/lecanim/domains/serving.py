@@ -246,12 +246,14 @@ def _txt(s: str, size: float = 20, color=FG, weight="NORMAL") -> Text:
     return Text(s, font=JP_FONT, font_size=size, color=color, weight=weight)
 
 
-def _place_in_box(m, box: Box | None, margin: float = 0.25):
+def _place_in_box(m, box: Box | None, margin: float = 0.25, grow: bool = False):
+    """box に収める. grow=True なら box いっぱいまで拡大もする（縦横比は保つ）."""
     if box is None:
         return m
-    m.scale_to_fit_width(min(m.width, box.width - 2 * margin) if m.width else 1)
-    if m.height > box.height - 2 * margin:
-        m.scale_to_fit_height(box.height - 2 * margin)
+    W, H = box.width - 2 * margin, box.height - 2 * margin
+    k = min(W / m.width, H / m.height)
+    if k < 1 or grow:
+        m.scale(k)
     m.move_to(box.center)
     return m
 
@@ -529,7 +531,7 @@ class ChartMob(LiveGroup):
     """
 
     def __init__(self, x_range: Sequence[float], y_range: Sequence[float], x_label: str = "", y_label: str = "",
-                 box: Box | None = None, x_length: float = 6.0, y_length: float = 3.6, number_size: float = 18):
+                 box: Box | None = None, x_length: float = 6.0, y_length: float = 3.6, number_size: float = 20):
         super().__init__()
         self.axes = Axes(x_range=list(x_range), y_range=list(y_range), x_length=x_length, y_length=y_length,
                          axis_config={"color": DIM, "include_numbers": True, "font_size": number_size,
@@ -544,7 +546,7 @@ class ChartMob(LiveGroup):
             self.add(self.yl)
         self.series: dict[str, VGroup] = {}
         self.marks: dict[str, VGroup] = {}
-        _place_in_box(self, box)
+        _place_in_box(self, box, grow=True)
 
     def p(self, x: float, y: float) -> np.ndarray:
         return self.axes.c2p(x, y)
@@ -630,7 +632,7 @@ class TimelineMob(LiveGroup):
                             _txt(f"{t:g}", 14, DIM).move_to([x, bottom - 0.25, 0]))
         self.unit_lab = _txt(unit, 14, DIM).next_to(self.axis, RIGHT, buff=0.12)
         self.add(self.rails, self.lane_lab, self.axis, self.tick_g, self.unit_lab, self.bars)
-        _place_in_box(self, box)
+        _place_in_box(self, box, grow=True)
 
     def x(self, t: float) -> float:
         return self.rails[0].get_start()[0] + (self.rails[0].get_end()[0] - self.rails[0].get_start()[0]) * t / self.t_max

@@ -570,6 +570,8 @@ class LectureScene(Scene):
             series = jp(self.lecture, size=20, color=ACCENT, weight=BOLD) if self.lecture else None
             if series is not None:
                 g = VGroup(series, *g).arrange(DOWN, buff=0.3, aligned_edge=LEFT)
+            if g.width > 11.4:
+                g.scale_to_fit_width(11.4)
             g.move_to(ORIGIN).to_edge(LEFT, buff=1.4)
             bar = Line(g.get_corner(UL) + LEFT * 0.35 + UP * 0.1, g.get_corner(DL) + LEFT * 0.35 + DOWN * 0.1,
                        color=ACCENT, stroke_width=4)
@@ -600,7 +602,11 @@ class LectureScene(Scene):
         rows_.arrange(DOWN, buff=0.55, aligned_edge=LEFT)
         if rows_.width > 12.5:
             rows_.scale_to_fit_width(12.5)
-        rows_.move_to(DOWN * 0.15).to_edge(LEFT, buff=1.2)
+        top = (GLOSS_Y - 0.35) if len(self.gloss) else BODY_TOP - 0.25
+        room = top - (-2.6)
+        if rows_.height > room:
+            rows_.scale_to_fit_height(room)
+        rows_.move_to([0, (top - 2.6) / 2, 0]).to_edge(LEFT, buff=1.2)
         if current is None:
             self.speak(title, kind="agenda")
             for r, it in zip(rows_, items):

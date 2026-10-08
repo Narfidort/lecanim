@@ -32,7 +32,8 @@ from .config import find_root, load
 
 QDIR = {"l": "480p15", "m": "720p30", "h": "1080p60"}
 REPO_URL = "https://github.com/Narfidort/lecanim"   # 公開リポジトリ（git からインストールしたときの依存先）
-SCENE_RE = re.compile(r"^class\s+([A-Za-z0-9_]+)\((?:[A-Za-z0-9_.]*Scene)\)", re.M)
+# 名前が _ で始まるクラスは共通の基底クラスとみなし，シーンにしない
+SCENE_RE = re.compile(r"^class\s+(?!_)([A-Za-z0-9_]+)\((?:[A-Za-z0-9_.]*Scene)\)", re.M)
 TEMPLATES = Path(__file__).parent / "templates"
 
 
@@ -103,6 +104,10 @@ def run_manim(r: Path, f: Path, scene: str, q: str, dry: bool, voice: bool) -> t
     shared = [(r / "media" / "Tex" / "_shared", r / "media" / "Tex" / scene),
               (r / "media" / "texts" / "_shared", r / "media" / "texts" / scene)]
     for sh, own in shared:
+        if own.is_dir():   # 中断などで残った空のファイルは作り直させる（共有へ戻すと全シーンが ParseError になる）
+            for c in own.iterdir():
+                if c.is_file() and c.stat().st_size == 0:
+                    c.unlink()
         _link_missing(sh, own)
     cmd = [sys.executable, "-m", "manim", f"-q{q}", "--disable_caching", "--config_file", str(cfg)]
     if dry:
@@ -125,7 +130,7 @@ def _link_missing(src: Path, dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
     for f in src.iterdir():
         t = dst / f.name
-        if f.is_file() and not t.exists():
+        if f.is_file() and f.stat().st_size > 0 and not t.exists():
             try:
                 os.link(f, t)
             except OSError:
