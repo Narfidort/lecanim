@@ -50,6 +50,7 @@ uv run lecanim youtube                  # 説明文・チャプター
 - [docs/WORKFLOW.md](docs/WORKFLOW.md) — 手順と各ステップの完了条件
 - [docs/STYLE.md](docs/STYLE.md) — 演出・説明・台本の原則（品質基準）
 - [docs/API.md](docs/API.md) — `LectureScene` / `GraphMob` などの API とはまりどころ
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) — レンダリングの高速化（VFR・エンコーダー・計測の注意）
 
 ## 構成
 
