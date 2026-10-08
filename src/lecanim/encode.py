@@ -119,7 +119,10 @@ def _encode_and_write_frame_vfr(self, frame, num_frames: int) -> None:
     """
     from fractions import Fraction
 
-    tb = self.stream.codec_context.time_base or Fraction(1, 60)
+    tb = self.stream.codec_context.time_base
+    if tb is None:   # 未設定のときはフレームレートから（1/60 決め打ちだと 15fps の -ql で静止区間が 1/4 になった）
+        rate = self.stream.codec_context.framerate or self.stream.average_rate or self.stream.rate
+        tb = 1 / Fraction(rate) if rate else Fraction(1, 60)
     n0 = getattr(self, "_lc_pts", 0)
     marks = [n0] if num_frames == 1 else [n0, n0 + num_frames - 1]
     for pts in marks:
