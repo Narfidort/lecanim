@@ -554,7 +554,12 @@ def _sync_up(r: Path, rc: dict) -> str:
     name = "-".join(r.parts[-3:])
     rproj = f"{root_}/projects/{name}"
     _ssh(host, f"mkdir -p {root_}/projects/{name} .cache/lecanim/voice")
-    _rsync(f"{lib}/", f"{host}:{root_}/lecanim/", excludes=[".venv", "__pycache__", "*.pyc", "uv.lock"], delete=True)
+    if (lib / "pyproject.toml").exists():   # ソースから使っている → そのソースを送って editable で入れる
+        _rsync(f"{lib}/", f"{host}:{root_}/lecanim/", excludes=[".venv", "__pycache__", "*.pyc", "uv.lock"],
+               delete=True)
+        spec = f"-e $HOME/{root_}/lecanim"
+    else:                                   # git などから入れている → 同じ版をリモートでも入れる
+        spec = f"'{_installed_spec()}'"
     _rsync(f"{r}/", f"{host}:{rproj}/", delete=True,
            excludes=[".venv", "__pycache__", "media", "logs", "qa_frames", "qa_reports", "transcripts", "youtube",
                      "materials", "uv.lock"])
@@ -562,10 +567,20 @@ def _sync_up(r: Path, rc: dict) -> str:
     if voice.exists():
         _rsync(f"{voice}/", f"{host}:.cache/lecanim/voice/")
     p = _ssh(host, f"cd {rproj} && (test -x .venv/bin/python || uv venv -q --python 3.13 .venv) && "
-                   f"uv pip install -q --python .venv/bin/python -e $HOME/{root_}/lecanim")
+                   f"uv pip install -q --python .venv/bin/python {spec}")
     if p.returncode != 0:
         sys.exit("リモートの環境構築に失敗しました（lecanim remote setup で確認）")
     return rproj
+
+
+def _installed_spec() -> str:
+    """手元に入っている lecanim と同じ版を指す pip の指定（git の固定 commit など）."""
+    import importlib.metadata as md
+    info = json.loads(md.distribution("lecanim").read_text("direct_url.json") or "{}")
+    vcs = info.get("vcs_info", {})
+    if vcs.get("vcs") == "git":
+        return f"lecanim @ git+{info['url']}@{vcs['commit_id']}"
+    sys.exit("lecanim の入手元が分かりません（ソースの clone か git から入れてください）")
 
 
 def _sync_down(r: Path, rc: dict, rproj: str) -> None:
