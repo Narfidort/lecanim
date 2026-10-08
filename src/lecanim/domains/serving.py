@@ -572,7 +572,10 @@ class ChartMob(LiveGroup):
             g.add(lab)
         self.series[key] = g
         self.add(g)
-        return [Create(line), LaggedStart(*[FadeIn(d, scale=0.5) for d in dots], lag_ratio=0.2),
+        # 点の数によらず約 1.5 秒で出し切る（92 点を 0.2 ずつずらすと 19 秒かかった）
+        lag = min(0.2, 0.5 / max(len(dots) - 1, 1))
+        return [Create(line, run_time=1.5), LaggedStart(*[FadeIn(d, scale=0.5) for d in dots], lag_ratio=lag,
+                                                        run_time=1.5),
                 *([FadeIn(g[2])] if label else [])]
 
     def hline(self, key: str, y: float, label: str = "", color=RED_E) -> list:
