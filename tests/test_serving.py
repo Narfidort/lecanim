@@ -52,3 +52,24 @@ def test_breakdown():
     assert abs(bd.share("AllReduce") - 10.4 / 23.7) < 1e-9
     fused = bd.replace(Finalize=0)
     assert fused.names() == ["GEMM2", "AllReduce"]
+
+
+def _qwen():
+    from lecanim.domains.serving import MoEModel
+    # Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 の config.json
+    return MoEModel(layers=94, hidden=4096, q_heads=64, kv_heads=4, head_dim=128, experts=128, top_k=8,
+                    expert_inter=1536, vocab=151936)
+
+
+def test_qwen3_param_counts():
+    m = _qwen()
+    assert 230e9 < m.total_params < 240e9          # 「235B」
+    assert 21e9 < m.active_params < 23e9           # 「A22B」
+    assert m.kv_bytes_per_token(1) == 96_256       # FP8 の KV は 1 token あたり約 94 KiB
+
+
+def test_expected_active_experts():
+    m = _qwen()
+    assert m.expected_active_experts(1) == 8
+    assert 110 < m.expected_active_experts(34) < 118
+    assert m.expected_active_experts(41) - m.expected_active_experts(34) < 6   # batch を 2 割増やしても数個しか増えない

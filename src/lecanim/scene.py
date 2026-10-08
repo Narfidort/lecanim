@@ -587,7 +587,7 @@ class LectureScene(Scene):
         self.wait_voice(0.2) if VOICE_ON else self.wait(1.2)
         self.play(FadeOut(g), run_time=0.6)
 
-    def agenda(self, items: list[str], current: int | None = None, done=(), title: str = "問い"):
+    def agenda(self, items: list[str], current: int | None = None, done=(), title: str = "問い", prefix: str = "Q"):
         """問いの一覧. current=None なら全項目を順に読み上げて並べる（台本キー q:<項目>）.
         current=i なら一覧を出して i 番目だけを強調し, その項目を読み上げてから消す（各ブロックの冒頭用）."""
         done = set(done)
@@ -595,7 +595,7 @@ class LectureScene(Scene):
         for i, it in enumerate(items):
             on = current is None or i == current
             col = ACCENT if i == current else (DIM if (i in done or not on) else FG)
-            num = jp(f"Q{i + 1}", size=34, color=ACCENT if on else DIM, weight=BOLD)
+            num = jp(f"{prefix}{i + 1}", size=34, color=ACCENT if on else DIM, weight=BOLD)
             body = row(it, size=34, color=col)
             mark = jp("✓", size=30, color=DIM) if i in done else VGroup()
             rows_.add(VGroup(num, body, mark).arrange(RIGHT, buff=0.3))

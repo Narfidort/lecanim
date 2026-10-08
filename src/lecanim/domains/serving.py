@@ -24,15 +24,16 @@ from typing import Iterable, Sequence
 
 import numpy as np
 from manim import (DOWN, LEFT, RIGHT, UP, AnimationGroup, Axes, Create, DashedLine, Dot, FadeIn, FadeOut,
-                   GrowFromEdge, LaggedStart, Line, Rectangle, Succession, SurroundingRectangle, Text,
+                   MoveAlongPath, GrowFromEdge, LaggedStart, Line, Rectangle, Succession, SurroundingRectangle, Text,
                    Transform, VGroup)
 
 from .. import voice as _voice
 from ..layout import Box
-from ..style import BLUE_E, CORNER, DIM, FG, JP_FONT, LINE, ORANGE_E, PALETTE, PURPLE_E, RED_E, YELLOW_E
+from ..style import BLUE_E, CORNER, DIM, FG, GREEN_E, JP_FONT, LINE, ORANGE_E, PALETTE, PURPLE_E, RED_E, YELLOW_E
 from ..units import LiveGroup, mark_overlay
 
-__all__ = ["Worker", "Deployment", "SLO", "Measurement", "Sweep", "Breakdown",
+__all__ = ["Worker", "Deployment", "SLO", "Measurement", "Sweep", "Breakdown", "MoEModel",
+           "ExpertGridMob", "LayerStackMob",
            "ClusterMob", "StackBarMob", "ChartMob", "TimelineMob", "ROLE_COLOR"]
 
 YOMI = [("Prefill", "プリフィル"), ("Decode", "デコード"), ("TTFT", "ティーティーエフティー"),
@@ -239,6 +240,52 @@ class Breakdown:
         return Breakdown([(n, vals.get(n, v)) for n, v in self.parts if vals.get(n, v) > 0], self.unit)
 
 
+@dataclass(frozen=True)
+class MoEModel:
+    """MoE Transformer の形（Hugging Face の config.json の値）. パラメータ数・KV の大きさなどを計算する."""
+    layers: int
+    hidden: int
+    q_heads: int
+    kv_heads: int
+    head_dim: int
+    experts: int
+    top_k: int
+    expert_inter: int
+    vocab: int
+
+    @property
+    def attn_params_per_layer(self) -> int:
+        q = self.hidden * self.q_heads * self.head_dim
+        kv = 2 * self.hidden * self.kv_heads * self.head_dim
+        o = self.q_heads * self.head_dim * self.hidden
+        return q + kv + o
+
+    @property
+    def expert_params(self) -> int:
+        """1 expert（gate・up・down の3つの行列）."""
+        return 3 * self.hidden * self.expert_inter
+
+    @property
+    def embed_params(self) -> int:
+        return 2 * self.vocab * self.hidden     # 入力の埋め込み＋出力の lm_head
+
+    @property
+    def total_params(self) -> int:
+        return self.layers * (self.attn_params_per_layer + self.experts * self.expert_params) + self.embed_params
+
+    @property
+    def active_params(self) -> int:
+        """1 token が通るパラメータ（attention 全部＋選ばれた top_k 個の expert＋埋め込み）."""
+        return self.layers * (self.attn_params_per_layer + self.top_k * self.expert_params) + self.embed_params
+
+    def kv_bytes_per_token(self, dtype_bytes: int = 1) -> int:
+        return self.layers * 2 * self.kv_heads * self.head_dim * dtype_bytes
+
+    def expected_active_experts(self, tokens: int) -> float:
+        """tokens 個の token がそれぞれ top_k 個を一様に選ぶとき，1 層で使われる expert の数の期待値."""
+        return self.experts * (1 - (1 - self.top_k / self.experts) ** tokens)
+
+
 # =====================================================================
 #   描画
 # =====================================================================
@@ -266,7 +313,7 @@ class ClusterMob(LiveGroup):
     """
 
     def __init__(self, dep: Deployment, box: Box | None = None, gpu_size: float = 0.5, gap: float = 0.12,
-                 node_gap: float = 0.55, show_spec: bool = True, node_labels: bool = True):
+                 node_gap: float = 0.55, show_spec: bool = True, node_labels: bool = True, grow: bool = False):
         super().__init__()
         self.dep = dep
         self.show_spec = show_spec
@@ -296,7 +343,7 @@ class ClusterMob(LiveGroup):
         self.add(self.nodes_g, self.gpus_g, self.workers_g)
         for w in dep.workers:
             self._add_worker_box(w)
-        _place_in_box(self, box)
+        _place_in_box(self, box, grow=grow)
 
     # ---- 部品 --------------------------------------------------------
     def _worker_box(self, w: Worker) -> VGroup:
@@ -668,3 +715,117 @@ class TimelineMob(LiveGroup):
     def grow(self, bars: Sequence[VGroup], lag: float = 0.1) -> list:
         return [LaggedStart(*[AnimationGroup(GrowFromEdge(b[0], LEFT), *[FadeIn(x) for x in b[1:]])
                               for b in bars], lag_ratio=lag)]
+
+
+class ExpertGridMob(LiveGroup):
+    """expert を格子に並べたもの. 選ばれた expert を光らせ，GPU ごとの持ち分を色で分ける.
+
+    eg.cell[i] -> i 番の expert の四角
+    """
+
+    def __init__(self, n: int = 128, cols: int = 16, size: float = 0.3, gap: float = 0.06,
+                 box: Box | None = None, color=DIM):
+        super().__init__()
+        self.n, self.cols, self.base = n, cols, color
+        self.cell: list[Rectangle] = []
+        for i in range(n):
+            r = Rectangle(width=size, height=size, stroke_color=color, stroke_width=1.2, fill_color=color,
+                          fill_opacity=0.15)
+            r.move_to([(i % cols) * (size + gap), -(i // cols) * (size + gap), 0])
+            self.cell.append(r)
+        self.cells_g = VGroup(*self.cell)
+        self.add(self.cells_g)
+        _place_in_box(self, box, grow=box is not None)
+
+    def create(self, run_time=1.2):
+        return LaggedStart(*[FadeIn(c, scale=0.6) for c in self.cell], lag_ratio=min(0.05, 1.0 / self.n),
+                           run_time=run_time)
+
+    def route(self, ids: Iterable[int], color=YELLOW_E, opacity=0.85) -> list:
+        """ids の expert を光らせる（Animation のリスト）."""
+        return [self.cell[i].animate.set_fill(color, opacity=opacity).set_stroke(color, width=2.5) for i in ids]
+
+    def reset(self) -> list:
+        return [c.animate.set_fill(self.base, opacity=0.15).set_stroke(self.base, width=1.2) for c in self.cell]
+
+    def partition(self, groups: int, colors: Sequence | None = None) -> list:
+        """expert を前から groups 個に等分し，GPU ごとの持ち分として枠の色を変える."""
+        colors = list(colors or PALETTE)
+        per = self.n // groups
+        return [self.cell[i].animate.set_stroke(colors[(i // per) % len(colors)], width=2.5)
+                for i in range(self.n)]
+
+    def group_frame(self, ids: Sequence[int], color, label: str = "", size: float = 18) -> VGroup:
+        """ids の expert をまとめて囲む枠（重ね描き扱い）."""
+        rect = SurroundingRectangle(VGroup(*[self.cell[i] for i in ids]), buff=0.05, color=color,
+                                    stroke_width=3, corner_radius=min(CORNER, 0.06))
+        g = VGroup(rect)
+        if label:
+            g.add(_txt(label, size, color).next_to(rect, LEFT, buff=0.12))
+        return mark_overlay(g)
+
+
+class LayerStackMob(LiveGroup):
+    """Transformer の層の積み重ね. 各層を「Attention｜MoE」の2つの箱で描き，代表の数層だけ見せる.
+
+    ls.attn[k], ls.moe[k] -> 下から k 番目に見せている層の箱
+    """
+
+    def __init__(self, shown: Sequence[int] = (1, 2, 3, 94), total: int = 94, width: float = 4.2,
+                 height: float = 0.5, gap: float = 0.22, box: Box | None = None):
+        super().__init__()
+        self.attn, self.moe, self.labels = [], [], []
+        self.layers_g = VGroup()
+        y = 0.0
+        prev = None
+        for k, li in enumerate(shown):
+            if prev is not None and li - prev > 1:
+                dots = _txt("⋮", 26, DIM).move_to([width / 2, y + height / 2, 0])
+                self.layers_g.add(dots)
+                y += height + gap
+            a = Rectangle(width=width * 0.45, height=height, stroke_color=GREEN_E, fill_color=GREEN_E,
+                          fill_opacity=0.35, stroke_width=2).move_to([width * 0.225, y, 0])
+            m = Rectangle(width=width * 0.5, height=height, stroke_color=BLUE_E, fill_color=BLUE_E,
+                          fill_opacity=0.35, stroke_width=2).move_to([width * 0.75, y, 0])
+            ta = _txt("Attention", 16, FG).move_to(a)
+            tm = _txt("MoE", 16, FG).move_to(m)
+            lab = _txt(f"層 {li}", 16, DIM).next_to(a, LEFT, buff=0.15)
+            self.attn.append(a)
+            self.moe.append(m)
+            self.labels.append(lab)
+            self.layers_g.add(VGroup(a, m, ta, tm, lab))
+            y += height + gap
+            prev = li
+        self.inp = _txt("入力の語", 18, DIM).move_to([width / 2, -height - 0.1, 0])
+        self.out = _txt("次の語の確率", 18, DIM).move_to([width / 2, y + 0.05, 0])
+        self.total = total
+        self.add(self.layers_g, self.inp, self.out)
+        _place_in_box(self, box, grow=box is not None)
+
+    def create(self, run_time=1.4):
+        return AnimationGroup(FadeIn(self.inp), LaggedStart(*[FadeIn(g, shift=UP * 0.1) for g in self.layers_g],
+                                                            lag_ratio=0.2), FadeIn(self.out),
+                              lag_ratio=0.3, run_time=run_time)
+
+    def token_path(self) -> Line:
+        """入力から出力まで，各層の Attention → MoE を順に通る折れ線."""
+        pts = [self.inp.get_top()]
+        for a, m in zip(self.attn, self.moe):
+            pts += [a.get_center(), m.get_center()]
+        pts.append(self.out.get_bottom())
+        line = Line(pts[0], pts[1])
+        line.set_points_as_corners(pts)
+        return line
+
+    def pass_token(self, color=YELLOW_E, run_time=3.0, trail: bool = True) -> list:
+        """1 つの語（点）が層を下から上へ通り抜ける. trail=True なら通った道筋を線で残す（self.trail）."""
+        path = self.token_path()
+        dot = mark_overlay(Dot(self.inp.get_top(), radius=0.13, color=color))
+        dot.set_z_index(5)
+        anims = [Succession(FadeIn(dot, run_time=0.2), MoveAlongPath(dot, path, run_time=run_time),
+                            FadeOut(dot, run_time=0.3))]
+        if trail:
+            self.trail = mark_overlay(path.copy().set_stroke(color, width=3, opacity=0.6))
+            self.trail.set_z_index(4)
+            anims.append(Create(self.trail, run_time=run_time + 0.2))
+        return anims
