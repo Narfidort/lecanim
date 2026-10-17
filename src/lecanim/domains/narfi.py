@@ -38,7 +38,7 @@ __all__ = ["walk", "scope_bars", "Formula", "Exit", "Atom", "Forall", "Exists", 
            "Cases", "Case", "Thm", "check", "Trace", "ProofMob", "ContextPanel", "KIND_COLOR", "mentions",
            "subst", "as_formula"]
 
-YOMI = [("Narfi", "ナーフィ"), ("Fix", "フィックス"), ("Obtain", "オブテイン"), ("assume", "アシューム"),
+YOMI = [("Narfi", "ナーフィ"), ("Fix", "フィックス"), ("Obtain", "オブテイン"), ("アシューム", "アシュウム"), ("assume", "アシュウム"),
         ("choose", "チューズ"), ("by_contra", "バイコントラ"), ("goal", "ゴール"), ("束縛", "そくばく"),
         ("全称", "ぜんしょう"), ("存在記号", "そんざいきごう"), ("量化子", "りょうかし"), ("文脈", "ぶんみゃく")]
 _voice.register_words(YOMI)
