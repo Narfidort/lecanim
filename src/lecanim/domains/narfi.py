@@ -33,7 +33,7 @@ from .. import voice as _voice
 from ..style import BG, BLUE_E, CORNER, DIM, FG, GREEN_E, ORANGE_E, PURPLE_E, RED_E, YELLOW_E, jp, row
 from ..units import LiveGroup, mark_overlay
 
-__all__ = ["walk", "scope_bars", "Atom", "Forall", "Exists", "Imp", "And", "Or", "Not", "Bot", "Iff",
+__all__ = ["walk", "scope_bars", "Formula", "Atom", "Forall", "Exists", "Imp", "And", "Or", "Not", "Bot", "Iff",
            "Fix", "Assume", "Obtain", "Choose", "Have", "Let", "ByContra", "Contradiction", "Just", "Chain",
            "Cases", "Case", "Thm", "check", "Trace", "ProofMob", "ContextPanel", "KIND_COLOR", "mentions",
            "subst", "as_formula"]
