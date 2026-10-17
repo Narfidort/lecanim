@@ -211,7 +211,13 @@ class LectureScene(Scene):
 
     @staticmethod
     def _bbox(m):
-        return m.get_left()[0], m.get_right()[0], m.get_bottom()[1], m.get_top()[1]
+        """見えている部品だけの外接矩形（スクロールで窓の外に出して透明にした部品などは数えない）."""
+        pts = [x.points for x in m.family_members_with_points()
+               if max(x.get_fill_opacity(), x.get_stroke_opacity()) > 0.05 and len(x.points)]
+        if not pts:
+            return m.get_left()[0], m.get_right()[0], m.get_bottom()[1], m.get_top()[1]
+        p = np.concatenate(pts)
+        return p[:, 0].min(), p[:, 0].max(), p[:, 1].min(), p[:, 1].max()
 
     def _visible(self, m):
         try:

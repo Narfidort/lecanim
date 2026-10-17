@@ -26,14 +26,14 @@ import re
 from dataclasses import dataclass, field
 
 import numpy as np
-from manim import (DOWN, LEFT, RIGHT, UP, Arrow, Create, CurvedArrow, FadeIn, FadeOut, Indicate, Line, MathTex,
-                   Rectangle, Transform, Triangle, VGroup, Write)
+from manim import (DOWN, LEFT, RIGHT, UP, Arrow, Create, CurvedArrow, Dot, FadeIn, FadeOut, Indicate, Line, MathTex,
+                   Mobject, Rectangle, ReplacementTransform, Transform, Triangle, VGroup, Write)
 
 from .. import voice as _voice
 from ..style import BG, BLUE_E, CORNER, DIM, FG, GREEN_E, ORANGE_E, PURPLE_E, RED_E, YELLOW_E, jp, row
 from ..units import LiveGroup, mark_overlay
 
-__all__ = ["walk", "scope_bars", "Formula", "Exit", "Atom", "Forall", "Exists", "Imp", "And", "Or", "Not", "Bot", "Iff",
+__all__ = ["walk", "scope_bars", "parts", "Formula", "Exit", "Atom", "Forall", "Exists", "Imp", "And", "Or", "Not", "Bot", "Iff",
            "Fix", "Assume", "Obtain", "Choose", "Have", "Let", "ByContra", "Contradiction", "Just", "Chain",
            "Cases", "Case", "Thm", "check", "Trace", "ProofMob", "ContextPanel", "KIND_COLOR", "mentions",
            "subst", "as_formula"]
@@ -166,6 +166,16 @@ class _Q(Formula):
             return None
         xs = ", ".join(self.x) if x_now is None else x_now
         return f"{xs} {self.bound}"
+
+
+def parts(f: Formula) -> list[str]:
+    """量化子の先頭を1つずつ切り分けた TeX の列（最後が本体）．代入して剥がす演出に使う."""
+    out = []
+    while isinstance(f, _Q):
+        out.append(f.head() + r",\ ")
+        f = f.body
+    out.append(f.tex())
+    return out
 
 
 class Forall(_Q):
@@ -339,9 +349,11 @@ class Contradiction(Step):
 
 @dataclass
 class Just(Step):
-    """根拠で goal を直接閉じる."""
+    """根拠で goal を直接閉じる．src と args を与えると「事実 src に args を代入すると goal そのもの」を検査・演出する."""
     by: str = ""
     note: str = ""
+    src: str | None = None
+    args: list = field(default_factory=list)
     kind = "just"
 
 
@@ -427,6 +439,7 @@ class ProofLine:
     head: tuple | None = None  # goal の先頭で消費される部分 (頭の TeX, 残りの TeX)：Fix / assume / choose
     uses: list = field(default_factory=list)    # 根拠として使う文脈の名前
     intro: list = field(default_factory=list)   # この行で文脈に入る名前
+    unpack: dict | None = None                  # 事実に代入して剥がす段階（Obtain / 代入で閉じる行）
 
 
 @dataclass
@@ -630,14 +643,7 @@ class _Checker:
         if isinstance(s, Obtain):
             src = self._lookup(s.src, ctx)
             self.scope_check([*s.args, s.src], ctx)
-            f = src
-            for a in s.args:
-                if not isinstance(f, Forall):
-                    self.err(f"Obtain {s.x}：{s.src} に引数 {a} を入れられない（∀ の形ではない）")
-                    break
-                xs = list(f.x)
-                f = Forall(xs[1:], f.body, f.bound) if len(xs) > 1 else f.body
-                f = f.subst(xs[0], a)
+            f, stages = self._apply(src, s.args, f"Obtain {s.x}", s.src)
             if f is not None and not isinstance(f, Exists):
                 if f is not None:
                     self.err(f"Obtain {s.x}：{s.src}({', '.join(s.args)}) は ∃ の形ではない")
@@ -651,16 +657,19 @@ class _Checker:
                     body = body.subst(f.x[0], s.x)
                 prop = And(Atom(cond), body) if cond else body
                 prop_t = prop.tex()
+                stages.append({"extract": s.x, "head": f.head(), "body": prop_t, "h": s.h})
             new = list(ctx)
             self.fresh(s.x, new)
             deps = self.deps_of(list(s.args) + [s.src], ctx)
             new.append(Entry(s.x, "obtain", deps=deps))
-            new.append(Entry(s.h, "have", prop_t, formula=Atom(prop_t), short=s.short))
+            new.append(Entry(s.h, "have", prop_t, formula=prop if f is not None and isinstance(f, Exists) else Atom(prop_t),
+                             short=s.short))
             if goal is not None and norm(s.x) in goal.names():
                 self.err(f"Obtain {s.x}：{s.x} が goal に現れている")
             call = s.src + (f"({', '.join(s.args)})" if s.args else "")
-            self.emit(s, depth, ["Obtain", f"${s.x}, {s.h}$", ":", f"${call}$"], new, g0, goal,
-                      uses_in=[s.src, *s.args])
+            k = self.emit(s, depth, ["Obtain", f"${s.x}, {s.h}$", ":", f"${call}$"], new, g0, goal,
+                          uses_in=[s.src, *s.args])
+            self.lines[k].unpack = {"src": s.src, "stages": stages}
             return goal, new
         if isinstance(s, Choose):
             self.scope_check([s.t], ctx)
@@ -715,8 +724,14 @@ class _Checker:
             self.emit(s, depth, ["contradiction", f"${s.h1}\\ {s.h2}$"], ctx, g0, None, uses_in=[s.h1, s.h2])
             return None, ctx
         if isinstance(s, Just):
-            self.scope_check([s.by], ctx)
-            self.emit(s, depth, [s.by], ctx, g0, None, uses_in=[s.by])
+            self.scope_check([s.by, *s.args], ctx)
+            k = self.emit(s, depth, [s.by], ctx, g0, None, uses_in=[s.by])
+            if s.src:
+                f, stages = self._apply(self._lookup(s.src, ctx), s.args, "代入", s.src)
+                if f is not None and goal is not None and f.tex().replace(" ", "") != goal.tex().replace(" ", ""):
+                    self.err(f"{s.src}({', '.join(s.args)}) は goal と一致しない：{f.tex()}")
+                stages.append({"done": f.tex() if f is not None else ""})
+                self.lines[k].unpack = {"src": s.src, "stages": stages}
             return None, ctx
         raise TypeError(f"未知のステップ {s!r}")
 
@@ -726,6 +741,22 @@ class _Checker:
         if any(r in ("<", ">") for r in rels):
             return "<" if any(r in ("<", r"\le", "=") for r in rels) else ">"
         return rels[-1]
+
+    def _apply(self, f, args, who, src):
+        """事実 f の先頭の ∀ に args を順に代入する．(結果, 段階) を返す.
+        段階 = [{"parts": 代入前の切り分け, "var": 外す変数, "arg": 入れる項}, ...]."""
+        stages = []
+        for a in args:
+            if not isinstance(f, Forall):
+                self.err(f"{who}：{src} に引数 {a} を入れられない（∀ の形ではない）")
+                break
+            xs = list(f.x)
+            stages.append({"parts": parts(f), "var": xs[0], "arg": a, "cond": f.cond(a)})
+            f = Forall(xs[1:], f.body, f.bound) if len(xs) > 1 else f.body
+            f = f.subst(xs[0], a)
+        if f is not None:
+            stages.append({"parts": parts(f)})
+        return f, stages
 
     def _lookup(self, name, ctx) -> Formula | None:
         for e in reversed(ctx):
@@ -767,121 +798,336 @@ _KW_COLOR = {"Fix": BLUE_E, "Obtain": ORANGE_E, "assume": GREEN_E, "by_contra": 
 class ProofMob(LiveGroup):
     """証明の行を並べ，スコープを開く行（Fix / assume / by_contra / Case）からその終わりまでを枠で囲む.
 
-    pm.reveal(i)：i 行目を書く（スコープを開く行なら枠も出す）
-    pm.cursor(i)：カーソル（▶）を i 行目へ
-    pm.mark(i, color)：i 行目を強調
+    文字の大きさは固定．長い証明は
+      * 出たスコープを畳む（中身を隠し「⋯」にする．∴ 行に結論が残る：fold(j)）
+      * いまの行が見えるようにスクロールする（窓の外の行は消す）
+      * 右端のミニマップに全体と窓の位置・いまの行を出す
+    で読める大きさのまま見せる．
+
+    pm.reveal(i)：i 行目をはっきりさせる（必要ならスクロール）．pm.cursor(i)：カーソル（▶）を i 行目へ
     """
 
-    def __init__(self, trace: Trace, width: float = 7.6, size: float = 22, line_buff: float = 0.16,
-                 indent: float = 0.42, top_left=(-6.8, 2.2), max_height: float = 5.0, title: bool = True):
+    def __init__(self, trace: Trace, width: float = 7.4, size: float = 24, line_buff: float = 0.14,
+                 indent: float = 0.42, top_left=(-6.8, 2.3), bottom: float = -2.62, title: bool = True,
+                 max_height: float | None = None, faint_opacity: float = 0.2, fit: bool = False):
         super().__init__()
         self.trace = trace
         self.indent = indent
+        self.buff = line_buff
+        self.faint_op = faint_opacity
         rows_ = []
         for ln in trace.lines:
             if ln.step.kind == "exit":      # スコープを出た所：字下げを戻し，示されたことを緑で
-                r = row("∴", ln.text[1], size=size * 0.85, color=GREEN_E, buff=0.12)
-                rows_.append(r)
+                rows_.append(row("∴", ln.text[1], size=size * 0.85, color=GREEN_E, buff=0.12))
                 continue
-            parts = []
+            ps = []
             for k, p in enumerate(ln.text):
                 if isinstance(p, str) and p in _KW_COLOR and k == 0 or p in ("by", ":=", ":"):
-                    parts.append(jp(p, size=size, color=_KW_COLOR[p], weight="BOLD" if k == 0 else "NORMAL"))
+                    ps.append(jp(p, size=size, color=_KW_COLOR[p], weight="BOLD" if k == 0 else "NORMAL"))
                 else:
-                    parts.append(p)
-            r = row(*parts, size=size, buff=0.12)
+                    ps.append(p)
+            r = row(*ps, size=size, buff=0.12)
             if ln.step.note:
                 r = VGroup(r, row("— " + ln.step.note, size=size * 0.8, color=DIM)).arrange(RIGHT, buff=0.3)
             rows_.append(r)
         self.rows = VGroup(*rows_)
-        self.rows.arrange(DOWN, buff=line_buff, aligned_edge=LEFT)
-        for r, ln in zip(self.rows, trace.lines):
-            r.shift(RIGHT * ln.depth * indent)
+        width -= 0.5                          # 右端はミニマップの場所
+        # 幅だけで縮める（高さはスクロールで扱う）
+        need = max((r.width + ln.depth * indent for r, ln in zip(self.rows, trace.lines)), default=1)
+        if need > width:
+            f = width / need
+            for r in self.rows:
+                r.scale(f)
+            self.indent = indent = indent * f
         head = VGroup()
         if title:
-            head = row("thm", f"{trace.thm.name}", size=size, color=DIM)
-            head[0].set_color(PURPLE_E)
+            t1 = row("thm", f"{trace.thm.name}", size=size, color=DIM)
+            t1[0].set_color(PURPLE_E)
             goal_line = row(r"$\vdash$", f"${_t(as_formula(trace.thm.goal))}$", size=size)
-            head = VGroup(head, goal_line).arrange(DOWN, aligned_edge=LEFT, buff=0.1)
+            head = VGroup(t1, goal_line).arrange(DOWN, aligned_edge=LEFT, buff=0.1)
             if head.width > width:
                 head.scale_to_fit_width(width)
+            head.move_to([top_left[0], top_left[1], 0], aligned_edge=UP + LEFT)
         self.head = head
-        body = VGroup(self.head, self.rows).arrange(DOWN, aligned_edge=LEFT, buff=0.3) if title else self.rows
-        if body.width > width:
-            body.scale_to_fit_width(width)
-        if body.height > max_height:
-            body.scale_to_fit_height(max_height)
-        body.move_to(np.array([top_left[0], top_left[1], 0]), aligned_edge=UP + LEFT)
-        self.body = body
-        # スコープ枠
+        self.x0 = top_left[0]
+        self.win_top = (head.get_bottom()[1] - 0.25) if title else top_left[1]
+        self.win_bot = bottom
+        self.right = top_left[0] + width
+        self.hidden: set[int] = set()
+        self.folded: dict[int, Mobject] = {}
+        self.offset = 0.0
+        if fit:                               # 全体を一度に見せたいとき（記法の説明など）は窓に収まるまで縮める
+            room = self.win_top - self.win_bot
+            tot = sum(r.height + line_buff for r in self.rows)
+            if tot > room:
+                f = room / tot
+                for r in self.rows:
+                    r.scale(f)
+                self.indent = indent = indent * f
+                self.buff = line_buff * f
+        self._shown: set[int] = set()
+        self._dimmed = False
+        self._cur = None
+        ys = self._ys()
+        for i, r in enumerate(self.rows):
+            r.move_to([self.x0 + trace.lines[i].depth * indent, ys[i], 0], aligned_edge=UP + LEFT)
         self.boxes: dict[int, Rectangle] = {}
         for i, ln in enumerate(trace.lines):
             if ln.step.opens() and ln.scope_end >= i:
-                col = KIND_COLOR.get(ln.step.kind, FG)
-                top = self.rows[i].get_top()[1] + 0.07
-                bot = self.rows[ln.scope_end].get_bottom()[1] - 0.07
-                left = self.rows[i].get_left()[0] - 0.12
-                right = body.get_right()[0] + 0.12
-                rect = Rectangle(width=right - left, height=top - bot, stroke_color=col, stroke_width=2,
-                                 fill_color=col, fill_opacity=0.06)
-                rect.move_to([(left + right) / 2, (top + bot) / 2, 0])
-                self.boxes[i] = rect
-        self.add(*self.boxes.values(), self.body)
+                self.boxes[i] = self._box_rect(i, ys)
+        self.body = VGroup(self.head, self.rows)
+        self.add(*self.boxes.values(), self.head, self.rows)
+        # 窓に入らない行は最初から消す
+        for i, r in enumerate(self.rows):
+            if not self._in_window(i, ys):
+                r.set_opacity(0)
+        self.needs_scroll = self._total_h() > self.win_top - self.win_bot
+        self.minimap = self._make_minimap() if self.needs_scroll else VGroup()
+        if self.needs_scroll:
+            self.add(self.minimap)
         self.arrow = Triangle(color=YELLOW_E, fill_opacity=1, stroke_width=0).rotate(-np.pi / 2).scale(0.1)
         mark_overlay(self.arrow)
-        self._shown: set[int] = set()
+
+    # --- 配置の計算
+    def _order(self):
+        """表示する要素の順：(行番号, None) か (開いた行番号, 畳んだ印)."""
+        out = []
+        for i in range(len(self.rows)):
+            if i in self.hidden:
+                continue
+            out.append((i, None))
+            if i in self.folded:
+                out.append((i, self.folded[i]))
+        return out
+
+    def _ys(self) -> dict:
+        """各行（と畳んだ印）の上端の y．畳まれて隠れた行は直前の位置."""
+        ys, y = {}, self.win_top + self.offset
+        last = y
+        for i, mark in self._order():
+            m = mark if mark is not None else self.rows[i]
+            if mark is None:
+                ys[i] = y
+            else:
+                ys[("fold", i)] = y
+            y -= m.height + self.buff
+            last = y
+        for i in range(len(self.rows)):
+            ys.setdefault(i, ys.get(i - 1, last) if i > 0 else last)
+        ys["end"] = y
+        return ys
+
+    def _total_h(self) -> float:
+        return sum(self.rows[i].height + self.buff for i in range(len(self.rows)) if i not in self.hidden)
+
+    def _in_window(self, i, ys) -> bool:
+        if i in getattr(self, "_pins", ()):
+            return True
+        top = ys[i]
+        bot = top - self.rows[i].height
+        return top <= getattr(self, "_eff_top", self.win_top) + 0.02 and bot >= self.win_bot - 0.02
+
+    def _enclosing(self, i: int) -> list[int]:
+        """i 行目を囲むスコープを開いた行（外側から）．∴ 行ではそのスコープ自身も含む."""
+        out = []
+        for j, ln in enumerate(self.trace.lines):
+            if ln.step.opens() and j < i <= ln.scope_end + 1 and j not in self.hidden:
+                out.append(j)
+        return out
+
+    def _ys_pinned(self, focus: int | None):
+        """スクロール量を決め，窓の上に固定するスコープの見出し（sticky）を求めて ys を返す."""
+        self._pins, self._eff_top = [], self.win_top
+        for _ in range(4):
+            eff_top = self.win_top - sum(self.rows[j].height + self.buff for j in self._pins)
+            self._eff_top = eff_top
+            ys = self._ys()
+            if focus is not None:
+                top = ys[focus]
+                bot = top - self.rows[focus].height
+                margin = 0.9
+                if bot < self.win_bot + margin:
+                    self.offset += (self.win_bot + margin) - bot
+                elif top > eff_top:
+                    self.offset -= top - eff_top
+                self.offset = max(0.0, self.offset)
+                ys = self._ys()
+            pins = [j for j in (self._enclosing(focus) if focus is not None else []) if ys[j] > eff_top + 0.01]
+            if pins == self._pins:
+                break
+            self._pins = pins
+        y = self.win_top
+        for j in self._pins:
+            ys[j] = y
+            y -= self.rows[j].height + self.buff
+        self._eff_top = y
+        return ys
+
+    def _box_rect(self, i, ys) -> Rectangle:
+        ln = self.trace.lines[i]
+        col = KIND_COLOR.get(ln.step.kind, FG)
+        top = ys[i] + 0.07
+        if i in self.folded:
+            bot = ys[("fold", i)] - self.folded[i].height - 0.07
+        else:
+            e = ln.scope_end
+            bot = ys[e] - self.rows[e].height - 0.07
+        top, bot = min(top, self.win_top + 0.07), max(bot, self.win_bot - 0.07)
+        left = self.x0 + ln.depth * self.indent - 0.12
+        right = self.right + 0.12
+        h = max(top - bot, 0.01)
+        rect = Rectangle(width=right - left, height=h, stroke_color=col, stroke_width=2, fill_color=col,
+                         fill_opacity=0.06)
+        rect.move_to([(left + right) / 2, (top + bot) / 2, 0])
+        if top - bot <= 0.02:
+            rect.set_stroke(opacity=0).set_fill(opacity=0)
+        return rect
+
+    def _make_minimap(self) -> VGroup:
+        x = self.right + 0.2
+        n = len(self.rows)
+        H = self.win_top - self.win_bot
+        self._mm_step = H / max(n, 1)
+        bars = VGroup()
+        for k, ln in enumerate(self.trace.lines):
+            y = self.win_top - (k + 0.5) * self._mm_step
+            w = max(0.04, 0.18 - 0.03 * ln.depth)
+            bars.add(Line([x + 0.03 * ln.depth, y, 0], [x + 0.03 * ln.depth + w, y, 0], color=DIM, stroke_width=2))
+        frame = Rectangle(width=0.32, height=0.1, stroke_color=YELLOW_E, stroke_width=1.5).move_to([x + 0.1, 0, 0])
+        g = VGroup(bars, frame)
+        self._mm_bars, self._mm_frame = bars, frame
+        self._mm_frame_target(self._ys())
+        return mark_overlay(g)
+
+    def _mm_frame_target(self, ys):
+        vis = [k for k in range(len(self.rows)) if k not in self.hidden and self._in_window(k, ys)]
+        if not vis:
+            return self._mm_frame.copy()
+        a, b = min(vis), max(vis)
+        top = self.win_top - a * self._mm_step + 0.02
+        bot = self.win_top - (b + 1) * self._mm_step - 0.02
+        t = Rectangle(width=0.32, height=top - bot, stroke_color=YELLOW_E, stroke_width=1.5)
+        t.move_to([self._mm_frame.get_x(), (top + bot) / 2, 0])
+        return t
+
+    def _relayout(self, focus: int | None = None) -> list:
+        """スクロールと畳みを反映した Animation のリスト（行の位置・不透明度，枠，ミニマップ）."""
+        if focus is None:
+            focus = getattr(self, "_cur", None)
+        ys = self._ys_pinned(focus)
+        anims = []
+        for i, r in enumerate(self.rows):
+            target_x = self.x0 + self.trace.lines[i].depth * self.indent
+            dy = ys[i] - r.get_top()[1]
+            if i in self.hidden or not self._in_window(i, ys):
+                op = 0.0
+            elif i in self._shown or not self._dimmed:
+                op = 1.0
+            else:
+                op = self.faint_op
+            cur_op = r.get_fill_opacity() if r.family_members_with_points() else 1
+            if abs(dy) > 1e-3 or abs(cur_op - op) > 1e-3:
+                anims.append(r.animate.shift(UP * dy + RIGHT * (target_x - r.get_left()[0])).set_opacity(op))
+        for j, mk in self.folded.items():
+            ys[("fold", j)] = ys[j] - self.rows[j].height - self.buff     # 開いた行（固定されていてもよい）の直後
+            mk.move_to([self.x0 + (self.trace.lines[j].depth + 1) * self.indent, ys[("fold", j)], 0],
+                       aligned_edge=UP + LEFT)
+            if mk not in self.submobjects:
+                self.add(mk)
+                anims.append(FadeIn(mk))
+            elif not (self.win_bot <= mk.get_bottom()[1] and mk.get_top()[1] <= self.win_top + 0.02):
+                anims.append(mk.animate.set_opacity(0))
+        for i, b in self.boxes.items():
+            t = self._box_rect(i, ys)
+            if i in self.hidden or not (i in self._shown or not self._dimmed):
+                t.set_stroke(opacity=0 if i in self.hidden else self.faint_op).set_fill(opacity=0)
+            anims.append(Transform(b, t))
+        if self.needs_scroll:
+            anims.append(Transform(self._mm_frame, self._mm_frame_target(ys)))
+        self._ys_cache = ys
+        return anims
 
     # --- 操作（Animation のリスト）
     def show_head(self) -> list:
         return [FadeIn(self.head)] if len(self.head) else []
 
-    def faint(self, opacity: float = 0.18):
+    def faint(self, opacity: float | None = None):
         """全体を薄く置いておき（証明の地図），reveal で1行ずつはっきりさせる．scene に add する前に呼ぶ."""
-        for r in self.rows:
-            r.set_opacity(opacity)
+        if opacity is not None:
+            self.faint_op = opacity
+        ys = self._ys()
+        for i, r in enumerate(self.rows):
+            r.set_opacity(self.faint_op if self._in_window(i, ys) else 0)
         for b in self.boxes.values():
-            b.set_stroke(opacity=opacity).set_fill(opacity=0.0)
+            b.set_stroke(opacity=self.faint_op).set_fill(opacity=0.0)
         self._dimmed = True
         return self
 
-    def to_faint(self, opacity: float = 0.18) -> list:
+    def to_faint(self, opacity: float | None = None) -> list:
         """表示済みの証明を薄くして，reveal で1行ずつ追い直す状態にする（Animation のリスト）."""
+        if opacity is not None:
+            self.faint_op = opacity
         self._dimmed = True
         self._shown = set()
-        return [*[r.animate.set_opacity(opacity) for r in self.rows],
-                *[b.animate.set_stroke(opacity=opacity).set_fill(opacity=0.0) for b in self.boxes.values()]]
+        return self._relayout()
 
     def reveal(self, i: int) -> list:
-        if i in self._shown:
-            return []
         self._shown.add(i)
-        anims = []
-        if getattr(self, "_dimmed", False):
-            if i in self.boxes:
-                anims.append(self.boxes[i].animate.set_stroke(opacity=1).set_fill(opacity=0.06))
-            anims.append(self.rows[i].animate.set_opacity(1))
-            return anims
-        if i in self.boxes:
-            anims.append(FadeIn(self.boxes[i]))
-        anims.append(FadeIn(self.rows[i], shift=RIGHT * 0.15))
-        return anims
+        return self._relayout(focus=i)
 
     def reveal_all(self) -> list:
         return [FadeIn(self)]
 
     def cursor(self, i: int) -> list:
-        p = self.rows[i].get_left() + LEFT * 0.18
+        ys = getattr(self, "_ys_cache", None) or self._ys()
+        x = self.x0 + self.trace.lines[i].depth * self.indent
+        p = np.array([x - 0.18, ys[i] - self.rows[i].height / 2, 0])
+        self._cur = i
+        if self.needs_scroll:
+            y = self.win_top - (i + 0.5) * self._mm_step
+            if not hasattr(self, "_mm_dot"):
+                self._mm_dot = mark_overlay(Dot([self._mm_frame.get_x() + 0.22, y, 0], radius=0.04, color=YELLOW_E))
+                self.add(self._mm_dot)
+            dot_anim = [self._mm_dot.animate.move_to([self._mm_frame.get_x() + 0.22, y, 0])]
+        else:
+            dot_anim = []
         if self.arrow not in self.submobjects:
             self.arrow.move_to(p)
             self.add(self.arrow)
-            return [FadeIn(self.arrow)]
-        return [self.arrow.animate.move_to(p)]
+            return [FadeIn(self.arrow), *dot_anim]
+        return [self.arrow.animate.move_to(p), *dot_anim]
+
+    def fold(self, j: int) -> list:
+        """スコープ j（開いた行）の中身を畳む．∴ 行はそのまま残る."""
+        ln = self.trace.lines[j]
+        if j in self.folded or ln.scope_end <= j:
+            return []
+        inner = range(j + 1, ln.scope_end + 1)
+        self.hidden.update(inner)
+        for k in inner:                      # 内側の畳み印も消す
+            if k in self.folded:
+                self.remove(self.folded.pop(k))
+        n = len(inner)
+        self.folded[j] = mark_overlay(row(f"⋯（{n} 行を畳んだ）", size=18, color=DIM))
+        return self._relayout(focus=None)
+
+    def unfold_all(self) -> list:
+        """畳んだスコープをすべて開き，先頭までスクロールを戻す（最後に全体を見せる）."""
+        for mk in self.folded.values():
+            self.remove(mk)
+        fades = [FadeOut(mk) for mk in self.folded.values()]
+        self.hidden, self.folded, self.offset = set(), {}, 0.0
+        return fades + self._relayout()
 
     def mark(self, i: int, color=YELLOW_E) -> list:
         return [self.rows[i].animate.set_color(color)]
 
     def box(self, i: int):
         return self.boxes.get(i)
+
+    def visible(self, i: int) -> bool:
+        ys = getattr(self, "_ys_cache", None) or self._ys()
+        return i not in self.hidden and self._in_window(i, ys)
 
     def line_of(self, name: str) -> int | None:
         """名前 name を導入した行."""
@@ -896,9 +1142,10 @@ class ProofMob(LiveGroup):
         arrows = VGroup()
         if i is None:
             return arrows
-        for d in self.trace.lines[i].ctx[-2].deps if self.trace.lines[i].ctx else ():
+        deps = next((e.deps for e in self.trace.lines[i].ctx if norm(e.name) == norm(name)), ())
+        for d in deps:
             j = self.line_of(d)
-            if j is None:
+            if j is None or not (self.visible(i) and self.visible(j)):
                 continue
             a = CurvedArrow(self.rows[i].get_left() + LEFT * 0.08, self.rows[j].get_left() + LEFT * 0.08,
                             angle=-np.pi / 2.2, color=color, stroke_width=3, tip_length=0.15)
@@ -933,6 +1180,22 @@ class ContextPanel(LiveGroup):
         self._keys: list[str] = []
         self._names: list[str] = []
         self._base: dict[str, float] = {}
+        # 証明の中で一度も根拠に使わない事実は薄く出す（覚えておく必要がない）
+        self.used = set()
+        for ln in trace.lines:
+            self.used |= {norm(n) for n in ln.uses}
+            if ln.unpack:
+                self.used.add(norm(ln.unpack["src"]))
+
+    def entry_of(self, name: str):
+        for ln in reversed(self.trace.lines):
+            for e in ln.ctx:
+                if norm(e.name) == norm(name):
+                    return e
+        for e in self._ctx_before(0):
+            if norm(e.name) == norm(name):
+                return e
+        return None
 
     def entry_mob(self, name: str):
         for n, m in zip(self._names, self.entries):
@@ -978,6 +1241,8 @@ class ContextPanel(LiveGroup):
         else:
             body = row(f"${e.show()}$", size=self.size, color=col if e.kind in ("fix", "obtain", "let") else FG)
         g = VGroup(VGroup(chip, tag), body).arrange(RIGHT, buff=0.14)
+        if e.kind not in ("fix", "obtain", "let", "param", "case") and norm(e.name) not in self.used:
+            g.set_opacity(0.4)
         maxw = self.r - self.l - 0.3
         if g.width > maxw:
             g.scale_to_fit_width(maxw)
@@ -1103,15 +1368,126 @@ class ContextPanel(LiveGroup):
         return anims
 
 
-def walk(scene, pm: ProofMob, cp: ContextPanel | None, i: int, text: str | None = None, extra=(),
-         run_time: float = 0.7, **_):
+_FACT_KINDS = ("hyp", "have", "assume", "contra")
+_ORIGIN = {"fix": "Fix で仮定した", "obtain": "Obtain で取り出した", "have": "have で示した", "assume": "assume で仮定した",
+           "contra": "by_contra で仮定した", "let": "let で定義した", "case": "Case で仮定した", "just": "", "exit": ""}
+
+
+def _fact_callout(pm: ProofMob, cp: "ContextPanel", names: list[str], i: int, size: float = 24):
+    """根拠に使う事実の中身と出どころを，いまの行の近くに大きく出す（ラベルを忘れても追えるように）."""
+    rows_ = VGroup()
+    for n in names:
+        e = cp.entry_of(n)
+        if e is None:
+            continue
+        j = pm.line_of(n)
+        where = "定理の仮定" if j is None else _ORIGIN.get(pm.trace.lines[j].step.kind, "")
+        if j is not None and not pm.visible(j):
+            where += "（画面外）"
+        body = e.short if e.short else f"${e.tex}$"
+        r = row(f"${e.name}$", "：", body, size=size, color=FG)
+        r[0].set_color(YELLOW_E)
+        tag = row(f"← {where}", size=size * 0.75, color=DIM)
+        rows_.add(VGroup(r, tag).arrange(RIGHT, buff=0.25))
+    if not len(rows_):
+        return None
+    rows_.arrange(DOWN, aligned_edge=LEFT, buff=0.12)
+    maxw = pm.right - pm.x0
+    if rows_.width > maxw:
+        rows_.scale_to_fit_width(maxw)
+    bg = Rectangle(width=rows_.width + 0.3, height=rows_.height + 0.24, fill_color=BG, fill_opacity=0.95,
+                   stroke_color=YELLOW_E, stroke_width=2)
+    g = VGroup(bg, rows_)
+    rows_.move_to(bg)
+    r = pm.rows[i]
+    if r.get_bottom()[1] - g.height - 0.25 > pm.win_bot - 0.1:
+        g.next_to(r, DOWN, buff=0.2)
+    else:
+        g.next_to(r, UP, buff=0.2)
+    g.align_to([pm.x0 + 0.3, 0, 0], LEFT)
+    return mark_overlay(g)
+
+
+def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
+    """事実 src に引数を1つずつ代入し，先頭の ∀ を剥がしていく演出．最後に ∃ の変数を取り出す（Obtain）か，
+    goal と一致することを示す（代入で閉じる行）．(作業台の mobject, 残りの式) を返す."""
+    up = ln.unpack
+    stages = up["stages"]
+    src = up["src"]
+    l, r = pm.x0 - 0.05, pm.right + 0.1
+    bg = Rectangle(width=r - l, height=3.3, fill_color=BG, fill_opacity=0.97, stroke_color=ORANGE_E, stroke_width=2)
+    bg.move_to([(l + r) / 2, (pm.win_top + pm.win_bot) / 2 - 0.2, 0])
+    title = row(f"事実 ${src}$ に代入して，中身を取り出す", size=22, color=ORANGE_E)
+    title.move_to(bg.get_top() + DOWN * 0.3).align_to(bg.get_left() + RIGHT * 0.2, LEFT)
+    bench = mark_overlay(VGroup(bg, title))
+    maxw = r - l - 0.5
+
+    def tex(ps):
+        m = MathTex(*ps, font_size=size, color=FG)
+        if m.width > maxw:
+            m.scale_to_fit_width(maxw)
+        m.move_to(bg.get_center() + DOWN * 0.15)
+        return mark_overlay(m)
+
+    first = next(st for st in stages if "parts" in st)
+    F = tex(first["parts"])
+    entry = cp.entry_mob(src)
+    scene.play(FadeIn(bench), run_time=0.5)
+    scene.play(FadeIn(F, target_position=entry.get_center() if entry is not None else F.get_center(), scale=0.5),
+               run_time=0.9)
+    for k, st in enumerate(stages):
+        if "var" not in st:
+            continue
+        head = F[0]
+        chip = row(f"${st['arg']}$", "を入れる", size=24, color=BLUE_E).next_to(head, UP, buff=0.25)
+        mark_overlay(chip)
+        scene.play(head.animate.set_color(BLUE_E), FadeIn(chip, shift=DOWN * 0.2), run_time=0.6)
+        scene.play(Indicate(head, color=BLUE_E), run_time=0.7)
+        nxt = next((s2 for s2 in stages[k + 1:] if "parts" in s2), None)
+        if nxt is None:
+            break
+        G = tex(nxt["parts"])
+        scene.play(FadeOut(head, shift=UP * 0.3), FadeOut(chip, target_position=head.get_center()),
+                   ReplacementTransform(VGroup(*F[1:]), G), run_time=1.0)
+        scene.add(G)
+        F = G
+        scene.play(Indicate(F, color=BLUE_E, scale_factor=1.04), run_time=0.6)
+    last = stages[-1]
+    if "extract" in last and len(F) > 1:
+        head = F[0]
+        lab = row("この", f"${last['extract']}$", "を取り出す", size=24, color=ORANGE_E).next_to(head, DOWN, buff=0.3)
+        rest = mark_overlay(VGroup(*F[1:]))
+        lab2 = row("残りが", f"${last['h']}$", size=24, color=GREEN_E).next_to(rest, DOWN, buff=0.3)
+        if lab2.get_left()[0] < lab.get_right()[0] + 0.3:     # 「取り出す」と重なるなら1段下へ
+            lab2.next_to(lab, DOWN, buff=0.15).align_to(rest, LEFT)
+        for t in (lab, lab2):                # 作業台からはみ出さない
+            if t.get_left()[0] < bg.get_left()[0] + 0.15:
+                t.align_to(bg.get_left() + RIGHT * 0.15, LEFT)
+            if t.get_right()[0] > bg.get_right()[0] - 0.15:
+                t.align_to(bg.get_right() + LEFT * 0.15, RIGHT)
+        mark_overlay(lab), mark_overlay(lab2)
+        scene.play(head.animate.set_color(ORANGE_E), FadeIn(lab), run_time=0.6)
+        scene.play(Indicate(head, color=ORANGE_E), FadeIn(lab2), rest.animate.set_color(GREEN_E), run_time=0.8)
+        bench.add(lab, lab2)
+    elif "done" in last:
+        ok = row("＝ goal", "✓", size=26, color=GREEN_E).next_to(F, DOWN, buff=0.3)
+        mark_overlay(ok)
+        scene.play(F.animate.set_color(GREEN_E), FadeIn(ok), Indicate(cp.goal, color=GREEN_E), run_time=0.8)
+        bench.add(ok)
+    bench.add(F)
+    return bench, F
+
+
+def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | None = None, extra=(),
+         run_time: float = 0.7, fold: bool = True, **_):
     """証明の i 行目を実行して見せる.
 
-    1. 行をはっきりさせ，カーソルを移す．字幕（台本）を読み始める
+    1. 行をはっきりさせ（必要ならスクロール），カーソルを移す．字幕（台本）を読み始める
     2. Fix / assume / choose：goal の先頭（消費される量化子・仮定）を色付きで分けて光らせる
-       根拠を使う行（Obtain / have / 連鎖 / 根拠だけの行）：使う文脈の項目を黄色で囲む
-    3. 文脈と goal を更新（Fix・assume で取り外した先頭は文脈に移る）
-    4. スコープを出る ∴ の行：枠を光らせ，中で導入した名前を消し，示されたことを ✓ で出す
+    3. 根拠に使う事実：文脈の項目を黄色で囲み，中身と出どころを行の近くに大きく出す
+    4. 事実に代入する行（Obtain・代入で閉じる行）：作業台で ∀ に1つずつ代入して剥がし，∃ の変数を取り出す
+    5. 文脈と goal を更新（Fix・assume で外した先頭，Obtain で取り出したものは文脈に移る）
+    6. スコープを出る ∴ の行：枠を光らせ，中で導入した名前を消し，示されたことを ✓ で出し，中身を畳む
     """
     ln = pm.trace.lines[i]
     scene.play(*pm.reveal(i), *pm.cursor(i), *extra, run_time=run_time)
@@ -1130,6 +1506,10 @@ def walk(scene, pm: ProofMob, cp: ContextPanel | None, i: int, text: str | None 
         if box is not None:
             scene.play(box.animate.set_stroke(width=2), run_time=0.3)
         scene.wait_voice()
+        if fold and j is not None:
+            anims = pm.fold(j)
+            if anims:
+                scene.play(*anims, *pm.cursor(i), run_time=0.8)
         return
     src = None
     col = KIND_COLOR.get(ln.step.kind, YELLOW_E)
@@ -1142,15 +1522,31 @@ def walk(scene, pm: ProofMob, cp: ContextPanel | None, i: int, text: str | None 
                 g.remove(src)
         scene.add(mark_overlay(src))
     boxes = VGroup()
+    callout = None
     if ln.uses:
         anims, boxes = cp.highlight(ln.uses)
-        if anims:
-            scene.play(*anims, Indicate(pm.rows[i], color=YELLOW_E, scale_factor=1.03), run_time=0.8)
-    anims = cp.state(i, source=src if ln.step.kind in ("fix", "assume", "contra") else None)
-    if src is not None:
+        facts = [n for n in ln.uses if (e := cp.entry_of(n)) is not None and e.kind in _FACT_KINDS
+                 and not (ln.unpack and norm(n) == norm(ln.unpack["src"]))]
+        callout = _fact_callout(pm, cp, facts, i) if facts else None
+        for n in facts:
+            j = pm.line_of(n)
+            if j is not None and pm.visible(j):
+                anims.append(Indicate(pm.rows[j], color=YELLOW_E, scale_factor=1.03))
+        if anims or callout is not None:
+            scene.play(*anims, *([FadeIn(callout)] if callout is not None else []), run_time=0.8)
+    bench = None
+    if ln.unpack:
+        bench, F = _workbench(scene, pm, cp, ln)
+        if ln.step.kind == "obtain":
+            src = F
+    anims = cp.state(i, source=src if ln.step.kind in ("fix", "assume", "contra", "obtain") else None)
+    if src is not None and ln.step.kind != "obtain":
         anims.append(FadeOut(src, scale=0.6))
     scene.play(*anims, *([FadeOut(boxes)] if len(boxes) else []), run_time=1.0)
     scene.wait_voice()
+    outs = [m for m in (bench, callout) if m is not None]
+    if outs:
+        scene.play(*[FadeOut(m) for m in outs], run_time=0.5)
 
 
 def scope_bars(tex, spans, buff: float = 0.14, gap: float = 0.16, size: float = 20, width: float = 4) -> VGroup:
