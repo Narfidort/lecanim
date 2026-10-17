@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import itertools  # noqa: F401
 import math  # noqa: F401
+import os
+import sys
 
 import numpy as np
 from manim import *  # noqa: F401,F403
+from tqdm import tqdm
 
+from . import qa as _qa
 from . import voice as _voice
 from .config import ROOT
 from .narration import SCRIPTS as _SCRIPTS
@@ -28,6 +32,8 @@ from .style import (ACCENT, BG, BODY_TOP, CAPTION, CORNER, DIM, FG, GLOSS_Y, LIN
 
 # エンジンの有無は起動時に判定しない（混雑時に誤って無音になるため）．合成済みはキャッシュ，未合成は合成時に接続する
 VOICE_ON = _voice.ENABLED
+# QA モード（lecanim qa）：動画は書かず，play の途中の数点で検査し，要所の画像を残す．音声は長さと合図の時刻だけ求める
+QA_MODE = os.environ.get("LECANIM_QA") == "1"
 
 
 # ---------------------------------------------------------------- scene base
@@ -45,6 +51,17 @@ class LectureScene(Scene):
         self.gloss = VGroup()          # 画面上部の「記号メモ」
         self._gloss_map: dict = {}
         self._units: list = []
+        self._cues: dict[str, float] = {}      # いまの台本の合図 → 場面の時刻
+        self._cue_names: set[str] = set()      # いまの台本にある（自動でない）合図
+        self._cue_used: set[str] = set()
+        self._speech_t0 = 0.0
+        self._busy: list[tuple[float, float]] = []      # 画面が動いていた区間
+        self._speeches: list[tuple[float, float, str]] = []
+        self._sync_log: list[tuple[str, float, float]] = []
+        self._issue_prev: set[str] = set()
+        self._issue_frames: list = []
+        self._story: list = []
+        self._story_pending: str | None = None
         self._overlay_ids: set[int] = set()
         self._steps = VGroup()
         self.header = VGroup()
@@ -54,6 +71,9 @@ class LectureScene(Scene):
         crumb.to_corner(UR, buff=0.06)
         self.crumb = crumb
         self.add(crumb)
+        if QA_MODE:                       # 描かずに最後の状態だけ進める（play の途中は get_time_progression で数点見る）
+            self.renderer._original_skipping_status = True
+            self.renderer.skip_animations = True
 
     # --- header -----------------------------------------------------------
     def phase(self, key: str, title: str = "", wait=0.4):
@@ -115,23 +135,107 @@ class LectureScene(Scene):
 
     def speak(self, text: str, kind: str = "say") -> float:
         """場面 kind の台本を読み上げ始める (前の音声が終わるまで待つ). 音声の長さを返す.
-        kind=None なら text をそのまま読む."""
+        kind=None なら text をそのまま読む. 台本の〔名前〕は合図：その位置を読み始める時刻が cue(名前) で取れる
+        （合図がなくても，文の頭が s0, s1, …，終わりが end で取れる）."""
         if kind is not None:
             text = self.narr(kind, text)
+        self._flush_cue_report()
         if not text:
+            self._cues = {}
             return 0.0
-        self._said.append(text)
+        self._said.append(_voice.strip_cues(text))
+        self._cues = {}
         if not VOICE_ON:
             return 0.0
         t = self.renderer.time
         if t < self._voice_end:
             self.wait(self._voice_end - t)
             t = self.renderer.time
-        path = _voice.synth(_voice.yomi(text))
-        d = _voice.duration(path)
-        self.add_sound(str(path))
+        if QA_MODE:
+            self._story_capture()
+        tl = self._timeline(text)
+        if QA_MODE:
+            d = tl["duration"]
+        else:
+            path = _voice.synth(_voice.yomi(text))
+            d = _voice.duration(path)
+            self.add_sound(str(path))
+        self._cues = {k: t + v for k, v in tl["cues"].items()}
+        self._cues["end"] = t + d
+        self._cue_names = {n for n, _ in _voice.prepare(text)[1]}
+        self._cue_used = set()
+        self._speech_t0 = t
         self._voice_end = t + d
+        self._speeches.append((t, t + d, _voice.strip_cues(text)[:28]))
+        self._story_pending = _voice.strip_cues(text)
         return d
+
+    def _timeline(self, text: str) -> dict:
+        try:
+            return _voice.timeline(text)
+        except Exception:                                      # noqa: BLE001  エンジンに届かない：文字数から概算
+            spoken, cues = _voice.prepare(text)
+            d = 0.145 * len(spoken) + 0.2
+            allc = [*cues, *_voice._sentence_cues(spoken)]
+            return {"duration": d, "approx": [n for n, _ in allc],
+                    "cues": {n: 0.05 + d * p / max(len(spoken), 1) for n, p in allc}}
+
+    def cue(self, name: str, lead: float = 0.0) -> bool:
+        """いまの台本の合図 name を読み始める時刻まで待つ（過ぎていれば待たずに進み，遅れを記録する）.
+        lead 秒だけ早く動き出す．合図がなければ何もしない（False）."""
+        tt = self._cues.get(name)
+        if tt is None:
+            return False
+        self._cue_used.add(name)
+        target = tt - lead
+        dt = target - self.renderer.time
+        if dt > 0.03:
+            self.wait(dt)
+        self._sync_log.append((name, target, self.renderer.time))
+        return True
+
+    def plan_cues(self, names: list[str], seconds: dict | None = None) -> None:
+        """台本にない合図を，前後の合図の間に等間隔で補う（合図を書かなくても，動きが音声全体に散る）.
+        names は動きの順．先頭は音声の頭，末尾の次は音声の 85% を終点とする.
+        seconds = {動きの名前（番号を除く）: かかる時間の目安}：補った合図は，前の動きが終わる時刻より早くしない."""
+        if not self._cues or not names:
+            return
+        t0, t1 = self._speech_t0, self._cues.get("end", self._speech_t0)
+        known = [n in self._cues for n in names]
+        i = 0
+        while i < len(names):
+            if known[i]:
+                i += 1
+                continue
+            j = i
+            while j < len(names) and not known[j]:
+                j += 1
+            left = self._cues[names[i - 1]] if i > 0 else None
+            right = self._cues[names[j]] if j < len(names) else None
+            k = j - i
+            if left is None:
+                a, bnd = t0, (right if right is not None else t0 + 0.85 * (t1 - t0))
+                ts = [a + (bnd - a) * q / k for q in range(k)]
+            else:
+                a = left
+                bnd = right if right is not None else max(t0 + 0.85 * (t1 - t0), left + 0.5)
+                ts = [a + (bnd - a) * q / (k + 1) for q in range(1, k + 1)]
+            for n, tt in zip(names[i:j], ts):
+                self._cues[n] = tt
+            i = j
+        if seconds:                       # 前の動きが終わる前に次の合図が来ないように（補った合図だけを後ろへ）
+            prev_end = None
+            for n, kn in zip(names, known):
+                base = n.rstrip("0123456789")
+                if not kn and prev_end is not None and self._cues[n] < prev_end:
+                    self._cues[n] = prev_end
+                prev_end = self._cues[n] + seconds.get(base, 1.0)
+
+    def _flush_cue_report(self):
+        unused = sorted(self._cue_names - self._cue_used)
+        if unused and self._speeches:
+            self._qa_msgs.setdefault(f"[W] 台本の合図をコードで使っていない: {', '.join(unused)}", self._speeches[-1][0])
+        self._cue_names, self._cue_used = set(), set()
 
     def wait_voice(self, pad: float = 0.35):
         """読み上げが終わるまで待つ."""
@@ -273,10 +377,56 @@ class LectureScene(Scene):
                 if ox > 0.08 and oy > 0.08:
                     warn(f"重なり: {name(body[i])} × {name(body[j])} ({ox:.2f}×{oy:.2f})")
 
+    def _qa_geometry(self, final: bool = True):
+        """文字の重なり・板が文字を覆う・矢印の検査. play の途中では 2 回続けて出たものだけ，終わりでは出たものを報告する."""
+        skip = {id(self.header), id(self.crumb)}
+        if not final:                      # 動いている最中の部品（変形・出入りの途中）は見ない．終わりの状態で見る
+            for m in getattr(self, "moving_mobjects", []) or []:
+                skip.update(id(x) for x in m.get_family())
+        issues = _qa.check_all(self, skip)
+        keys = set()
+        for iss in issues:
+            keys.add(iss.key)
+            if iss.key in self._issue_prev or final:
+                msg = f"[E] {iss.key}"
+                if msg not in self._qa_msgs:
+                    self._qa_msgs[msg] = self.renderer.time
+                    if QA_MODE:
+                        self._issue_frames.append((self.renderer.time, iss.msg, self._grab(), iss.boxes))
+        self._issue_prev = keys
+
+    def _grab(self):
+        """いまの画面を画像（numpy）で取る."""
+        self.renderer.update_frame(self)
+        return np.array(self.renderer.get_frame())[:, :, :3].copy()
+
+    def _story_capture(self):
+        """直前の場面の終わりの画面を，コンタクトシート用に残す（QA モード）."""
+        if self._story_pending is not None:
+            self._story.append((self.renderer.time, self._story_pending, self._grab()[::2, ::2]))
+            self._story_pending = None
+
     def play(self, *args, **kwargs):
+        t0 = self.renderer.time
         super().play(*args, **kwargs)
+        t1 = self.renderer.time
+        if not (len(args) == 1 and isinstance(args[0], Wait)) and t1 > t0:
+            self._busy.append((t0, t1))
         self._regroup()
         self._qa_check()
+        self._qa_geometry(final=True)
+        self._issue_prev = set()
+
+    def get_time_progression(self, run_time, description, n_iterations=None, override_skip_animations=False):
+        # QA モード：描かずに，play の途中の数点（25% 刻み）で止めて検査する
+        if QA_MODE and self.renderer.skip_animations and not override_skip_animations and run_time > 0.4:
+            return tqdm([run_time * f for f in (0.25, 0.5, 0.75, 1.0)], desc=description, disable=True, leave=False)
+        return super().get_time_progression(run_time, description, n_iterations, override_skip_animations)
+
+    def update_to_time(self, t):
+        super().update_to_time(t)
+        if QA_MODE:
+            self._qa_geometry(final=abs(t - self.duration) < 1e-6)
 
     def tear_down(self):
         super().tear_down()
@@ -303,13 +453,54 @@ class LectureScene(Scene):
                 except Exception:
                     pass
         (sd / f"{name}.txt").write_text("\n".join(lines_t) + "\n")
+        self._flush_cue_report()
+        self._sync_report()
+        if QA_MODE:
+            self._story_capture()
+            self._story.append((self.renderer.time, "（終わり）", self._grab()[::2, ::2]))
         d = ROOT / "qa_reports"
         d.mkdir(exist_ok=True)
         f = d / f"{type(self).__name__}.txt"
-        lines_ = [f"{t:7.1f}s  {m}" for m, t in sorted(self._qa_msgs.items(), key=lambda x: x[1])]
+        frames_note = {}
+        if QA_MODE:
+            frames_note = self._save_qa_images(name)
+        lines_ = [f"{t:7.1f}s  {m}" + (f"  → {frames_note[m]}" if m in frames_note else "")
+                  for m, t in sorted(self._qa_msgs.items(), key=lambda x: x[1])]
         f.write_text("\n".join(lines_) + ("\n" if lines_ else ""))
         import sys
         print(f"[QA] {type(self).__name__}: {len(lines_)} warning(s) -> {f}", file=sys.stderr)
+
+    def _sync_report(self):
+        """音声と画面の動きのずれ：合図に遅れた／音声の間ずっと画面が動かない."""
+        for name, target, actual in self._sync_log:
+            late = actual - target
+            if late > 0.5:
+                self._qa_msgs.setdefault(f"[{'E' if late > 1.5 else 'W'}] 合図 {name} に {late:.1f} 秒遅れた"
+                                         f"（その前の動きが長すぎる）", target)
+        for t0, t1, label in self._speeches:
+            if t1 - t0 < 8:
+                continue
+            cur, gap = t0, 0.0
+            for a, b in sorted(self._busy):
+                if b <= t0 or a >= t1:
+                    continue
+                gap = max(gap, max(a, t0) - cur)
+                cur = max(cur, min(b, t1))
+            gap = max(gap, t1 - cur)
+            if gap > 7:
+                self._qa_msgs.setdefault(f"[W] 音声が続く {gap:.0f} 秒のあいだ画面が動かない: {label}", t0)
+
+    def _save_qa_images(self, name: str) -> dict:
+        """問題の画面（赤枠つき）とコンタクトシートを qa_frames/ に保存する."""
+        out = {}
+        d = ROOT / "qa_frames"
+        (d / "issues").mkdir(parents=True, exist_ok=True)
+        for k, (t, msg, img, boxes) in enumerate(self._issue_frames[:30]):
+            f = d / "issues" / f"{name}_{k:02d}.png"
+            _qa.save_annotated(img, boxes, f)
+            out[f"[E] {msg}"] = str(f.relative_to(ROOT))
+        _qa.contact_sheet(self._story, d / f"{name}_story", cols=4, per_page=24)
+        return out
 
     def show(self, *mobs, anim=FadeIn, run_time=0.8, overlay=False, **kw):
         for m in mobs:  # 横にはみ出すものは自動で縮小して画面内へ
@@ -396,8 +587,9 @@ class LectureScene(Scene):
                           max_tip_length_to_length_ratio=0.15)
             # 吹き出しの縁から対象の手前まで
             start = call.get_boundary_point(normalize(tc - call.get_center()))
-            end = tc - normalize(tc - start) * (0.15 + max(target.width, target.height) / 2 * 0.6)
+            end = self._arrow_tip(start, target, tc)
             arrow = Arrow(start, end, buff=0.05, color=color, stroke_width=4, max_tip_length_to_length_ratio=0.2)
+            arrow._qa_target = target
         else:
             self._place_anywhere(call)
         self.overlay(call)
@@ -446,33 +638,87 @@ class LectureScene(Scene):
         self._gloss_map[sym] = chip
         return chip
 
+    @staticmethod
+    def _arrow_tip(start, target: Mobject, tc) -> np.ndarray:
+        """矢印の先端：start から対象の中心へ向かう線が，対象の外接矩形（少し広げる）に入る点の手前."""
+        bb = _qa._bbox(target, 0.0)
+        if bb is None:
+            return tc - normalize(tc - start) * 0.3
+        l, r, b, t = bb[0] - 0.08, bb[1] + 0.08, bb[2] - 0.08, bb[3] + 0.08
+        d = tc[:2] - start[:2]
+        n = np.linalg.norm(d)
+        if n < 1e-6:
+            return tc
+        u = d / n
+        lo, hi = 0.0, n
+        for k in range(2):                                         # 光線と矩形の交差（スラブ法）
+            lo_k, hi_k = ((l, r) if k == 0 else (b, t))
+            if abs(u[k]) < 1e-9:
+                if not (lo_k <= start[k] <= hi_k):
+                    return tc
+                continue
+            t1, t2 = (lo_k - start[k]) / u[k], (hi_k - start[k]) / u[k]
+            lo, hi = max(lo, min(t1, t2)), min(hi, max(t1, t2))
+        enter = lo if lo <= hi else n
+        p = start[:2] + u * max(enter - 0.04, 0.05)
+        return np.array([p[0], p[1], 0.0])
+
     def _occupied(self, exclude=()):
         ex = {id(self.header), id(self.crumb), id(self.gloss), *map(id, exclude)}
         return [m for m in self.mobjects if id(m) not in ex and m.family_members_with_points()]
 
     def _place_free(self, m: Mobject, target: Mobject, buff=0.9):
-        """target の周り (上下左右・斜め) のうち, 他の要素と最も重ならない位置に m を置く."""
-        occ = self._occupied(exclude=(m,))
-        best, best_score = None, None
-        dirs = [UP, DOWN, LEFT, RIGHT, UR, UL, DR, DL]
-        for d in dirs:
-            c = m.copy().next_to(target, d, buff=buff)
-            c.set_x(np.clip(c.get_x(), -6.9 + c.width / 2, 6.9 - c.width / 2))
-            c.set_y(np.clip(c.get_y(), -2.85 + c.height / 2, 2.3 - c.height / 2))
-            l, r, b, t = c.get_left()[0], c.get_right()[0], c.get_bottom()[1], c.get_top()[1]
-            score = 0.0
-            for o in occ:
-                ol, or_, ob, ot = o.get_left()[0], o.get_right()[0], o.get_bottom()[1], o.get_top()[1]
-                # 点の多い GraphMob などは, 実際の点との重なりで評価
-                pts = np.concatenate([x.points for x in o.family_members_with_points()])
-                inside = ((pts[:, 0] > l) & (pts[:, 0] < r) & (pts[:, 1] > b) & (pts[:, 1] < t)).mean()
-                ox = max(0, min(r, or_) - max(l, ol))
-                oy = max(0, min(t, ot) - max(b, ob))
-                score += inside * 10 + ox * oy * 0.2
-            score += 0.05 * np.linalg.norm(c.get_center() - target.get_center())
-            if best_score is None or score < best_score:
-                best, best_score = c.get_center(), score
-        m.move_to(best)
+        """吹き出し m を置く場所を探す．候補は target の周りの格子．費用は，文字との重なり（正確な外接矩形）・
+        図形の点との重なり・対象そのものを覆うこと・矢印が文字を横切ること・対象からの距離."""
+        items = _qa.collect(self, skip_ids={id(m), id(self.header), id(self.crumb), id(self.gloss)})
+        texts = [i for i in items if i.kind == "text" and i.op >= _qa.MIN_TEXT_OPACITY]
+        pts = [i.obj for i in items if i.kind in ("shape", "arrow") and i.op >= 0.3]
+        allp = [np.concatenate([x.points[:, :2] for x in o.family_members_with_points()]) for o in pts]
+        tb = _qa._bbox(target, 0.0) or (target.get_left()[0], target.get_right()[0], target.get_bottom()[1],
+                                         target.get_top()[1])
+        tc = np.array([(tb[0] + tb[1]) / 2, (tb[2] + tb[3]) / 2])
+        w, h = m.width, m.height
+        best, best_cost = None, None
+        xs = np.arange(-6.9 + w / 2, 6.9 - w / 2 + 1e-6, 0.4)
+        ys = np.arange(-2.85 + h / 2, 2.3 - h / 2 + 1e-6, 0.3)
+        if not len(xs):
+            xs = np.array([0.0])
+        if not len(ys):
+            ys = np.array([0.0])
+        cands = [(cx, cy) for cx in xs for cy in ys]
+        # 矢印が文字を横切りにくいよう，対象の真上・真下・真横の候補も加える
+        for cy in ys:
+            cands.append((float(np.clip(tc[0], xs[0], xs[-1])), float(cy)))
+        for cx in xs:
+            cands.append((float(cx), float(np.clip(tc[1], ys[0], ys[-1]))))
+        for cx, cy in cands:
+            if True:
+                l, r, b_, t_ = cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2
+                cost = 0.0
+                for it in texts:
+                    ox, oy = min(r, it.r) - max(l, it.l), min(t_, it.t) - max(b_, it.b)
+                    if ox > 0 and oy > 0:
+                        cost += 25 * ox * oy / max(it.area, 1e-6) * min(it.area, 1.0) + 2
+                for p in allp:
+                    cost += 6 * ((p[:, 0] > l) & (p[:, 0] < r) & (p[:, 1] > b_) & (p[:, 1] < t_)).mean()
+                ox, oy = min(r, tb[1]) - max(l, tb[0]), min(t_, tb[3]) - max(b_, tb[2])
+                if ox > 0 and oy > 0:
+                    cost += 40                                         # 対象そのものを覆う
+                # 矢印（吹き出しの中心 → 対象の中心）が文字を横切る
+                for f_ in np.linspace(0.15, 0.85, 10):
+                    px, py = cx + (tc[0] - cx) * f_, cy + (tc[1] - cy) * f_
+                    if tb[0] - 0.2 <= px <= tb[1] + 0.2 and tb[2] - 0.2 <= py <= tb[3] + 0.2:
+                        continue
+                    if l <= px <= r and b_ <= py <= t_:
+                        continue
+                    for it in texts:
+                        if it.l <= px <= it.r and it.b <= py <= it.t:
+                            cost += 1.5
+                            break
+                cost += 0.35 * float(np.hypot(cx - tc[0], cy - tc[1]))
+                if best_cost is None or cost < best_cost:
+                    best, best_cost = np.array([cx, cy, 0.0]), cost
+        m.move_to(best if best is not None else target.get_center())
 
     def _place_anywhere(self, m: Mobject):
         """対象なしの吹き出し: 本文領域の候補位置のうち, 既存要素と最も重ならない所へ."""

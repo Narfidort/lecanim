@@ -931,11 +931,11 @@ class ProofMob(LiveGroup):
         """i 行目を囲むスコープを開いた行（外側から）．∴ 行ではそのスコープ自身も含む."""
         out = []
         for j, ln in enumerate(self.trace.lines):
-            if ln.step.opens() and j < i <= ln.scope_end + 1 and j not in self.hidden:
+            if ln.step.opens() and j < i <= ln.scope_end + 1 and j not in self.hidden and j not in self.folded:
                 out.append(j)
         return out
 
-    def _ys_pinned(self, focus: int | None):
+    def _ys_pinned(self, focus: int | None, top: bool = False):
         """スクロール量を決め，窓の上に固定するスコープの見出し（sticky）を求めて ys を返す."""
         self._pins, self._eff_top = [], self.win_top
         for _ in range(4):
@@ -943,14 +943,20 @@ class ProofMob(LiveGroup):
             self._eff_top = eff_top
             ys = self._ys()
             if focus is not None:
-                top = ys[focus]
-                bot = top - self.rows[focus].height
+                row_top = ys[focus]
+                bot = row_top - self.rows[focus].height
                 margin = 0.9
-                if bot < self.win_bot + margin:
+                if top:                       # 作業台を下に開くので，行を窓の上へ寄せる
+                    self.offset = max(0.0, self.offset + eff_top - row_top)
+                elif bot < self.win_bot + margin:
                     self.offset += (self.win_bot + margin) - bot
-                elif top > eff_top:
-                    self.offset -= top - eff_top
+                elif row_top > eff_top:
+                    self.offset -= row_top - eff_top
                 self.offset = max(0.0, self.offset)
+                ys = self._ys()
+            # 全体が窓に収まるならスクロールしない（畳んだ後など）
+            if self._total_h() <= self.win_top - self.win_bot - 0.05:
+                self.offset = 0.0
                 ys = self._ys()
             pins = [j for j in (self._enclosing(focus) if focus is not None else []) if ys[j] > eff_top + 0.01]
             if pins == self._pins:
@@ -1010,11 +1016,11 @@ class ProofMob(LiveGroup):
         t.move_to([self._mm_frame.get_x(), (top + bot) / 2, 0])
         return t
 
-    def _relayout(self, focus: int | None = None) -> list:
+    def _relayout(self, focus: int | None = None, top: bool = False) -> list:
         """スクロールと畳みを反映した Animation のリスト（行の位置・不透明度，枠，ミニマップ）."""
         if focus is None:
             focus = getattr(self, "_cur", None)
-        ys = self._ys_pinned(focus)
+        ys = self._ys_pinned(focus, top)
         anims = []
         for i, r in enumerate(self.rows):
             target_x = self.x0 + self.trace.lines[i].depth * self.indent
@@ -1029,14 +1035,18 @@ class ProofMob(LiveGroup):
             if abs(dy) > 1e-3 or abs(cur_op - op) > 1e-3:
                 anims.append(r.animate.shift(UP * dy + RIGHT * (target_x - r.get_left()[0])).set_opacity(op))
         for j, mk in self.folded.items():
-            ys[("fold", j)] = ys[j] - self.rows[j].height - self.buff     # 開いた行（固定されていてもよい）の直後
             mk.move_to([self.x0 + (self.trace.lines[j].depth + 1) * self.indent, ys[("fold", j)], 0],
                        aligned_edge=UP + LEFT)
+            vis_now = self.win_bot <= mk.get_bottom()[1] and mk.get_top()[1] <= self._eff_top + 0.02
             if mk not in self.submobjects:
                 self.add(mk)
-                anims.append(FadeIn(mk))
-            elif not (self.win_bot <= mk.get_bottom()[1] and mk.get_top()[1] <= self.win_top + 0.02):
-                anims.append(mk.animate.set_opacity(0))
+                if vis_now:
+                    anims.append(FadeIn(mk))
+                else:
+                    mk.set_opacity(0)
+            else:        # 固定した見出しの下・窓の中にあるときだけ見せる
+                vis = self.win_bot <= mk.get_bottom()[1] and mk.get_top()[1] <= self._eff_top + 0.02
+                anims.append(mk.animate.set_opacity(1.0 if vis else 0.0))
         for i, b in self.boxes.items():
             t = self._box_rect(i, ys)
             if i in self.hidden or not (i in self._shown or not self._dimmed):
@@ -1071,9 +1081,9 @@ class ProofMob(LiveGroup):
         self._shown = set()
         return self._relayout()
 
-    def reveal(self, i: int) -> list:
+    def reveal(self, i: int, top: bool = False) -> list:
         self._shown.add(i)
-        return self._relayout(focus=i)
+        return self._relayout(focus=i, top=top)
 
     def reveal_all(self) -> list:
         return [FadeIn(self)]
@@ -1149,6 +1159,7 @@ class ProofMob(LiveGroup):
                 continue
             a = CurvedArrow(self.rows[i].get_left() + LEFT * 0.08, self.rows[j].get_left() + LEFT * 0.08,
                             angle=-np.pi / 2.2, color=color, stroke_width=3, tip_length=0.15)
+            a._qa_target = self.rows[j]
             arrows.add(a)
         return mark_overlay(arrows)
 
@@ -1415,11 +1426,16 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
     stages = up["stages"]
     src = up["src"]
     l, r = pm.x0 - 0.05, pm.right + 0.1
-    bg = Rectangle(width=r - l, height=3.3, fill_color=BG, fill_opacity=0.97, stroke_color=ORANGE_E, stroke_width=2)
-    bg.move_to([(l + r) / 2, (pm.win_top + pm.win_bot) / 2 - 0.2, 0])
+    i_row = next(k for k, x in enumerate(pm.trace.lines) if x is ln)
+    top_y = pm.rows[i_row].get_bottom()[1] - 0.12          # いまの行は見えたまま，その下に作業台を開く
+    bot_y = pm.win_bot + 0.05                              # 字幕にかからない
+    h_b = min(max(top_y - bot_y, 2.3), 3.5)
+    bg = Rectangle(width=r - l, height=h_b, fill_color=BG, fill_opacity=0.97, stroke_color=ORANGE_E, stroke_width=2)
+    bg.move_to([(l + r) / 2, top_y - h_b / 2, 0])
     title = row(f"事実 ${src}$ に代入して，中身を取り出す", size=22, color=ORANGE_E)
     title.move_to(bg.get_top() + DOWN * 0.3).align_to(bg.get_left() + RIGHT * 0.2, LEFT)
     bench = mark_overlay(VGroup(bg, title))
+    bench._qa_modal = True                  # 作業台は意図して下の証明を覆う
     maxw = r - l - 0.5
 
     def tex(ps):
@@ -1432,12 +1448,16 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
     first = next(st for st in stages if "parts" in st)
     F = tex(first["parts"])
     entry = cp.entry_mob(src)
+    scene.cue("open")
     scene.play(FadeIn(bench), run_time=0.5)
     scene.play(FadeIn(F, target_position=entry.get_center() if entry is not None else F.get_center(), scale=0.5),
                run_time=0.9)
+    nsub = -1
     for k, st in enumerate(stages):
         if "var" not in st:
             continue
+        nsub += 1
+        scene.cue(f"sub{nsub}")
         head = F[0]
         chip = row(f"${st['arg']}$", "を入れる", size=24, color=BLUE_E).next_to(head, UP, buff=0.25)
         mark_overlay(chip)
@@ -1454,6 +1474,7 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
         scene.play(Indicate(F, color=BLUE_E, scale_factor=1.04), run_time=0.6)
     last = stages[-1]
     if "extract" in last and len(F) > 1:
+        scene.cue("extract")
         head = F[0]
         lab = row("この", f"${last['extract']}$", "を取り出す", size=24, color=ORANGE_E).next_to(head, DOWN, buff=0.3)
         rest = mark_overlay(VGroup(*F[1:]))
@@ -1470,6 +1491,7 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
         scene.play(Indicate(head, color=ORANGE_E), FadeIn(lab2), rest.animate.set_color(GREEN_E), run_time=0.8)
         bench.add(lab, lab2)
     elif "done" in last:
+        scene.cue("match")
         ok = row("＝ goal", "✓", size=26, color=GREEN_E).next_to(F, DOWN, buff=0.3)
         mark_overlay(ok)
         scene.play(F.animate.set_color(GREEN_E), FadeIn(ok), Indicate(cp.goal, color=GREEN_E), run_time=0.8)
@@ -1478,21 +1500,47 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
     return bench, F
 
 
+# 各動きにかかる時間の目安（秒）．合図を自動で置くとき，次の動きまでこの間隔をあける
+_STEP_SECONDS = {"reveal": 1.0, "head": 1.6, "uses": 1.0, "open": 1.6, "sub": 3.0, "extract": 2.0, "match": 1.5,
+                 "state": 1.2, "exit": 2.4}
+
+
+def _cue_names(ln) -> list[str]:
+    """walk が1行の中で順に行う動きの名前（台本の〔名前〕に対応）."""
+    if ln.step.kind == "exit":
+        return ["reveal", "exit"]
+    names = ["reveal"]
+    if ln.head and ln.goal_before is not None:
+        names.append("head")
+    if ln.uses:
+        names.append("uses")
+    if ln.unpack:
+        names.append("open")
+        names += [f"sub{k}" for k in range(sum(1 for st in ln.unpack["stages"] if "var" in st))]
+        names.append("extract" if "extract" in ln.unpack["stages"][-1] else "match")
+    names.append("state")
+    return names
+
+
 def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | None = None, extra=(),
          run_time: float = 0.7, fold: bool = True, **_):
-    """証明の i 行目を実行して見せる.
+    """証明の i 行目を実行して見せる．動きは台本の合図〔名前〕に合わせて起こす（合図がなければ音声全体に等間隔）.
 
-    1. 行をはっきりさせ（必要ならスクロール），カーソルを移す．字幕（台本）を読み始める
-    2. Fix / assume / choose：goal の先頭（消費される量化子・仮定）を色付きで分けて光らせる
-    3. 根拠に使う事実：文脈の項目を黄色で囲み，中身と出どころを行の近くに大きく出す
-    4. 事実に代入する行（Obtain・代入で閉じる行）：作業台で ∀ に1つずつ代入して剥がし，∃ の変数を取り出す
-    5. 文脈と goal を更新（Fix・assume で外した先頭，Obtain で取り出したものは文脈に移る）
-    6. スコープを出る ∴ の行：枠を光らせ，中で導入した名前を消し，示されたことを ✓ で出し，中身を畳む
+    reveal  行をはっきりさせ（必要ならスクロール），カーソルを移す
+    head    Fix / assume / choose：goal の先頭（消費される量化子・仮定）を色付きで分けて光らせる
+    uses    根拠に使う事実：文脈の項目を囲み，中身と出どころを行の近くに大きく出す
+    open    作業台を開く（Obtain と，代入で閉じる行）
+    sub0…   作業台で ∀ に1つずつ代入して先頭を剥がす
+    extract ∃ の変数を取り出す（Obtain）／ match 剥がし終えた式が goal と一致する
+    state   文脈と goal を更新（外した先頭・取り出したものは文脈へ移る）
+    exit    ∴ の行：枠を光らせ，中で導入した名前を消し，示されたことを ✓ で出し，中身を畳む
     """
     ln = pm.trace.lines[i]
-    scene.play(*pm.reveal(i), *pm.cursor(i), *extra, run_time=run_time)
     if text:
         scene.note(text, block=False)
+    scene.plan_cues(_cue_names(ln), _STEP_SECONDS)
+    scene.cue("reveal")
+    scene.play(*pm.reveal(i, top=bool(ln.unpack)), *pm.cursor(i), *extra, run_time=run_time)
     if cp is None:
         scene.wait_voice()
         return
@@ -1500,6 +1548,7 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
         j = next((j for j in range(i - 1, -1, -1) if pm.trace.lines[j].step.opens()
                   and pm.trace.lines[j].scope_end == i - 1 and pm.trace.lines[j].depth == ln.depth), None)
         box = pm.box(j) if j is not None else None
+        scene.cue("exit")
         if box is not None:
             scene.play(box.animate.set_stroke(width=5), run_time=0.5)
         scene.play(*cp.state(i), run_time=1.0)
@@ -1514,6 +1563,7 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
     src = None
     col = KIND_COLOR.get(ln.step.kind, YELLOW_E)
     if ln.head and ln.goal_before is not None:
+        scene.cue("head")
         src = cp.split_goal(*ln.head)
         scene.play(src.animate.set_color(col).scale(1.12), run_time=0.6)
         scene.play(Indicate(src, color=col), run_time=0.8)
@@ -1524,6 +1574,7 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
     boxes = VGroup()
     callout = None
     if ln.uses:
+        scene.cue("uses")
         anims, boxes = cp.highlight(ln.uses)
         facts = [n for n in ln.uses if (e := cp.entry_of(n)) is not None and e.kind in _FACT_KINDS
                  and not (ln.unpack and norm(n) == norm(ln.unpack["src"]))]
@@ -1539,6 +1590,7 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
         bench, F = _workbench(scene, pm, cp, ln)
         if ln.step.kind == "obtain":
             src = F
+    scene.cue("state")
     anims = cp.state(i, source=src if ln.step.kind in ("fix", "assume", "contra", "obtain") else None)
     if src is not None and ln.step.kind != "obtain":
         anims.append(FadeOut(src, scale=0.6))

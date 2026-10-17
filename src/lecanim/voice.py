@@ -130,11 +130,14 @@ def register_words(words, suspect=()) -> None:
 
 
 def words() -> list[tuple[str, str]]:
-    """適用順の読み辞書: プロジェクト → 分野 → 汎用. 長い語を先に置換したいので, 同じ層の中では長い順."""
-    proj = [tuple(w) for w in _PY.get("words", [])]
+    """適用順の読み辞書: プロジェクト → 利用者 → 分野 → 汎用（learned.toml を含む）.
+    長い語を先に置換したいので, 同じ層の中では長い順. 詳しくは lecanim.yomi."""
+    from . import yomi as _y
+    proj = [tuple(w[:2]) for w in _PY.get("words", [])]
+    user = sorted(_y.user_words(), key=lambda w: -len(w[0]))
     dom = sorted(_DOMAIN_WORDS, key=lambda w: -len(w[0]))
-    base = sorted(BASE_WORDS, key=lambda w: -len(w[0]))
-    return proj + dom + base
+    base = sorted(BASE_WORDS + _y.learned_words(), key=lambda w: -len(w[0]))
+    return proj + user + dom + base
 
 _PLAIN = [("→", "、"), ("⇒", "ならば"), ("⇔", "同値"), ("／", "、"), ("…", "、"), ("□", ""), ("✓", ""),
           ("✗", ""), ("──", "、"), ("—", "、"), ("「", ""), ("」", ""), ("≥", "以上"), ("≤", "以下"),
@@ -143,8 +146,16 @@ _PLAIN = [("→", "、"), ("⇒", "ならば"), ("⇔", "同値"), ("／", "、"
           ("＋", "プラス"), ("π", "パイ")]
 
 
+CUE_RE = re.compile(r"〔([^〔〕]*)〕")      # 台本の合図：〔名前〕．その位置を読み始める時刻に画面の動きを合わせる
+
+
+def strip_cues(text: str) -> str:
+    return CUE_RE.sub("", text)
+
+
 def yomi(text: str) -> str:
-    """字幕テキスト ($...$ を含む) → 読み上げ用テキスト."""
+    """字幕テキスト ($...$ を含む) → 読み上げ用テキスト（合図〔…〕は取り除く）."""
+    text = strip_cues(text)
     segs = text.split("$")
     out = []
     for i, seg in enumerate(segs):
@@ -235,6 +246,95 @@ def kana(spoken: str, speaker: int = SPEAKER) -> str:
             return ""
         f.write_text(q.get("kana", ""))
     return f.read_text()
+
+
+# ---------------------------------------------------------------- 発音タイミング（合図）
+# VOICEVOX の audio_query は，各モーラの子音・母音の長さと，句の間の無音の長さを返す．
+# 実際の音声の長さは (総和 / speedScale + 前後の無音) とほぼ一致する（実測：誤差 0.01〜0.08 秒）ので，
+# 台本の任意の位置を読み始める時刻を，音声を作る前に正確に求められる．
+PRE, POST = 0.05, 0.15
+
+
+def prepare(text: str) -> tuple[str, list[tuple[str, int]]]:
+    """合図つき台本 → (読み上げ文, [(合図の名前, 読み上げ文中の位置)]). yomi() は合図の前後で別々に適用する."""
+    parts = CUE_RE.split(text)
+    out, cues, n = [], [], 0
+    for i, seg in enumerate(parts):
+        if i % 2 == 0:
+            y = yomi(seg)
+            out.append(y)
+            n += len(y)
+        else:
+            cues.append((seg, n))
+    return "".join(out), cues
+
+
+def _moras(q: dict) -> list[tuple[str, float, bool]]:
+    """audio_query → [(モーラの文字, 長さ（speedScale 前）, 無音か)] の列."""
+    out = []
+    for ap in q["accent_phrases"]:
+        for m in ap["moras"]:
+            out.append((m["text"], (m.get("consonant_length") or 0) + m["vowel_length"], False))
+        if ap.get("pause_mora"):
+            out.append(("、", ap["pause_mora"]["vowel_length"], True))
+    return out
+
+
+def _sentence_cues(spoken: str) -> list[tuple[str, int]]:
+    """合図がない台本のための自動の合図：文の頭 s0, s1, …（「。」の次）."""
+    cues, k = [("s0", 0)], 1
+    for m in re.finditer("。", spoken):
+        if m.end() < len(spoken):
+            cues.append((f"s{k}", m.end()))
+            k += 1
+    return cues
+
+
+def timeline(text: str, speaker: int = SPEAKER, speed: float = SPEED) -> dict:
+    """台本（合図つき）→ {"duration": 音声の長さ, "cues": {名前: 読み始める時刻（音声の先頭から）}, "approx": [近似した合図]}.
+    結果は ~/.cache/lecanim/voice/<hash>.json にキャッシュする（合成済みの音声があれば，エンジンは不要）."""
+    spoken, cues = prepare(text)
+    auto = _sentence_cues(spoken)
+    allc = sorted([*cues, *[c for c in auto if c[0] not in {n for n, _ in cues}]], key=lambda c: c[1])
+    key = hashlib.sha1(json.dumps([spoken, allc, speaker, speed]).encode()).hexdigest()[:16]
+    f = CACHE / "timeline" / f"{key}.json"
+    if f.exists():
+        return json.loads(f.read_text())
+    f.parent.mkdir(parents=True, exist_ok=True)
+    full = json.loads(_post("/audio_query", {"text": spoken, "speaker": speaker}, timeout=20))
+    ms = _moras(full)
+    starts, t = [], 0.0
+    for _, d, _ in ms:
+        starts.append(t)
+        t += d
+    total = t
+    sound = [i for i, m in enumerate(ms) if not m[2]]       # 無音でないモーラの番号
+    res, approx = {}, []
+    for name, pos in allc:
+        if pos <= 0:
+            res[name] = 0.0
+            continue
+        if pos >= len(spoken):
+            res[name] = total / speed
+            continue
+        try:
+            qp = json.loads(_post("/audio_query", {"text": spoken[:pos], "speaker": speaker}, timeout=20, tries=2))
+            pm = [m for m in _moras(qp) if not m[2]]
+            n = len(pm)
+            ok = n <= len(sound) and [m[0] for m in pm] == [ms[sound[i]][0] for i in range(n)]
+        except Exception:                                    # noqa: BLE001
+            ok, n = False, 0
+        if ok and n < len(sound):
+            res[name] = starts[sound[n]] / speed            # 合図の次のモーラを読み始める時刻（間の無音は越える）
+        elif ok:
+            res[name] = total / speed
+        else:                                                # 前半だけ読んだ結果が一致しない：文字数で按分
+            res[name] = total / speed * pos / max(len(spoken), 1)
+            approx.append(name)
+    out = {"duration": total / speed + PRE + POST, "pre": PRE, "cues": {k: round(v + PRE, 3) for k, v in res.items()},
+           "approx": approx}
+    f.write_text(json.dumps(out, ensure_ascii=False))
+    return out
 
 
 def duration(path: Path) -> float:

@@ -1,0 +1,3 @@
+# 汎用の読み（リポジトリに入れて共有する）．`lecanim yomi add 語 読み --scope repo --example 例文` で追加
+words = [
+]

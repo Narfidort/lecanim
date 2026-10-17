@@ -90,10 +90,14 @@ def avail_mem_gb() -> float | None:
     return None
 
 
-def run_manim(r: Path, f: Path, scene: str, q: str, dry: bool, voice: bool) -> tuple[str, int, str]:
+def run_manim(r: Path, f: Path, scene: str, q: str, dry: bool, voice: bool,
+              qa: bool = False) -> tuple[str, int, str]:
     env = dict(os.environ, LECANIM_ROOT=str(r))
     if not voice:
         env["VOICE"] = "0"
+    if qa:      # 動画は書かず，検査だけ（音声は長さと合図の時刻だけ求める）
+        env["LECANIM_QA"] = "1"
+        q, dry = "l", True
     logd = r / "logs"
     logd.mkdir(exist_ok=True)
     # 並列実行で同じ数式・文字を同じファイルに同時に書いて壊れるのを防ぐため，シーンごとにキャッシュを分ける
@@ -117,7 +121,7 @@ def run_manim(r: Path, f: Path, scene: str, q: str, dry: bool, voice: bool) -> t
     log = p.stdout + p.stderr
     if p.returncode in (-9, 137):
         log += "\n[lecanim] プロセスが強制終了されました（メモリ不足の可能性．[render] min_free_gb を上げるか並列数を下げる）\n"
-    (logd / f"{scene}.{'dry' if dry else q}.log").write_text(log)
+    (logd / f"{scene}.{'qa' if qa else 'dry' if dry else q}.log").write_text(log)
     if p.returncode == 0:
         for sh, own in shared:
             _link_missing(own, sh)
@@ -140,7 +144,7 @@ def _link_missing(src: Path, dst: Path) -> None:
                     pass
 
 
-def run_many(r: Path, jobs_list, q, dry, voice, jobs):
+def run_many(r: Path, jobs_list, q, dry, voice, jobs, qa: bool = False):
     """最大 jobs 並列．ただし空きメモリが [render] min_free_gb 未満の間は次のシーンを起動しない."""
     import threading
     import time
@@ -160,7 +164,7 @@ def run_many(r: Path, jobs_list, q, dry, voice, jobs):
     running: dict[int, threading.Thread] = {}
 
     def work(i, f, s):
-        results[i] = run_manim(r, f, s, q, dry, voice)
+        results[i] = run_manim(r, f, s, q, dry, voice, qa)
 
     for i, (f, s) in enumerate(jobs_list):
         while True:
@@ -180,10 +184,10 @@ def run_many(r: Path, jobs_list, q, dry, voice, jobs):
         scene, code, log = results[i]
         if code != 0 and jobs > 1:
             # 並列時の一時的な失敗（キャッシュ競合・メモリ不足）に備えて，1回だけ単独で再実行
-            scene, code, log = run_manim(r, f, s, q, dry, voice)
-        qa = [l for l in log.splitlines() if l.startswith("[QA]")]
+            scene, code, log = run_manim(r, f, s, q, dry, voice, qa)
+        qa_lines = [l for l in log.splitlines() if l.startswith("[QA]")]
         mark = "ok " if code == 0 else "ERR"
-        print(f"  {mark} {scene}  " + " / ".join(x.split(": ", 1)[-1] for x in qa))
+        print(f"  {mark} {scene}  " + " / ".join(x.split(": ", 1)[-1] for x in qa_lines))
         if code != 0:
             err = [l for l in log.splitlines() if re.search(r"Error|error:|強制終了|Unavailable", l)]
             print("      " + "\n      ".join(err[-4:]))
@@ -393,6 +397,21 @@ def cmd_beats(a):
         sys.exit(1)
 
 
+def _stale(r: Path, jobs: list, a) -> list:
+    """前回の書き出しから変わっていないシーンを除く（--force で全部）."""
+    if getattr(a, "force", False):
+        return jobs
+    from . import rcache
+    voice = not a.no_voice
+    todo = [(f, s) for f, s in jobs if not rcache.fresh(r, f, s, a.q, voice)]
+    if len(todo) < len(jobs):
+        print(f"変更のないシーンは書き出しません（{len(jobs) - len(todo)} 本．全部作り直すなら --force）: "
+              + ", ".join(s for f, s in jobs if (f, s) not in todo))
+    if not todo:
+        print("書き出すシーンはありません（すべて最新）")
+    return todo
+
+
 def cmd_render(a):
     r = root()
     if a.remote:
@@ -405,14 +424,67 @@ def cmd_render(a):
             print("※ VOICEVOX に接続できません．合成済み（キャッシュ）の台本はそのまま使えますが，"
                   "未合成の台本があるシーンは失敗します（`lecanim voice up`．無音でよければ --no-voice）")
     jobs = [(f, s) for f, ss in tl for s in ss]
-    print(f"レンダリング（{len(jobs)} シーン, -q{a.q}, 並列 {a.jobs}）")
-    res = run_many(r, jobs, a.q, False, voice, a.jobs)
+    jobs = _stale(r, jobs, a)
+    res = []
+    if jobs:
+        if not a.no_qa and voice and run_qa(r, jobs, a.jobs):
+            sys.exit("QA にエラーがあります．直してから書き出してください（無視するなら --no-qa）")
+        print(f"レンダリング（{len(jobs)} シーン, -q{a.q}, 並列 {a.jobs}）")
+        res = run_many(r, jobs, a.q, False, voice, a.jobs)
+        from . import rcache
+        for (f, s), (_, c) in zip(jobs, res):
+            if c == 0:
+                rcache.mark(r, f, s, a.q, voice)
     for f, _ in tl:
         out = combine(r, f, a.q)
         if out:
             d = duration(out)
             print(f"  → {out.relative_to(r)}  ({int(d // 60)}分{int(d % 60):02d}秒)")
     if any(c for _, c in res):
+        sys.exit(1)
+
+
+def run_qa(r: Path, jobs: list, n_jobs: int, verbose: bool = False) -> int:
+    """動画を書かずに検査する．(エラー数) を返す．画面の重なり・矢印・音声と画面のずれ・台本の抜け＋読みの食い違い."""
+    print(f"QA（{len(jobs)} シーン．動画は書きません）")
+    res = run_many(r, jobs, "l", True, True, n_jobs, qa=True)
+    n_err = n_warn = 0
+    for _, s in jobs:
+        rep = r / "qa_reports" / f"{s}.txt"
+        lines = [l for l in rep.read_text().splitlines() if l.strip()] if rep.exists() else []
+        errs = [l for l in lines if "[W]" not in l]
+        warns = [l for l in lines if "[W]" in l]
+        n_err += len(errs)
+        n_warn += len(warns)
+        print(f"  {s}: エラー {len(errs)}，注意 {len(warns)}   コンタクトシート: qa_frames/{s}_story_1.png")
+        for l in errs[:12]:
+            print("    " + l.strip())
+        if len(errs) > 12:
+            print(f"    …ほか {len(errs) - 12} 件（{rep.relative_to(r)}）")
+        for l in warns[: (None if verbose else 3)]:
+            print("    " + l.strip())
+    # 読み：UniDic と VOICEVOX の食い違い（耳で確認する前に機械で見つける）
+    from . import yomi as Y
+    from .narration import SCRIPTS
+    names = {s for _, s in jobs}
+    items = [(f"{sc} {k[:14]}", t) for sc, lines in SCRIPTS.items() if sc in names for k, t in lines if t]
+    flagged = Y.scan_texts(items) if items else {}
+    if flagged:
+        n_err += len(flagged)
+        print(f"  読みの食い違い {len(flagged)} 語（直すなら `lecanim yomi add 語 読み`，このままなら `lecanim yomi ok 語`）")
+        for sf, e in sorted(flagged.items(), key=lambda x: -len(x[1]["where"]))[:20]:
+            print(f"    {sf}  UniDic:{e['unidic']}  VOICEVOX:{e['voicevox']}  …{e['context']}…  {e['where'][0]}")
+    print(f"合計：エラー {n_err}，注意 {n_warn}" + ("" if n_err == 0 else "  ← 書き出しの前に直す"))
+    return n_err + (1 if any(c for _, c in res) else 0)
+
+
+def cmd_qa(a):
+    """動画を書かずに，文字の重なり・矢印・音声と画面のずれ・台本の抜け・読みの誤りを検査し，台本つきのコンタクトシートを作る.
+    書き出し（数分〜数十分）の前に必ずこれで直す．1シーンあたり十数秒."""
+    r = root()
+    tl = targets(r, a.targets)
+    jobs = [(f, s) for f, ss in tl for s in ss]
+    if run_qa(r, jobs, a.jobs, a.verbose):
         sys.exit(1)
 
 
@@ -642,15 +714,32 @@ def render_remote(r: Path, a) -> None:
             print("※ ローカルの VOICEVOX に接続できません．合成済みの台本はキャッシュを使います（未合成があると失敗）")
         port = load(r)["voice"]["url"].rsplit(":", 1)[-1].strip("/")
         tunnel = f"{port}:127.0.0.1:{port}"     # リモートからもローカルの VOICEVOX を使う
+    stale = _stale(r, [(f, s) for f, ss in targets(r, a.targets) for s in ss], a)
+    if stale and not a.no_qa and voice:
+        if run_qa(r, stale, 3):
+            sys.exit("QA にエラーがあります．直してから書き出してください（無視するなら --no-qa）")
+    if not stale:
+        for f, _ in targets(r, a.targets):
+            combine(r, f, a.q)
+        return
     print(f"同期中 → {rc['host']}")
     rproj = _sync_up(r, rc)
-    tg = " ".join(a.targets) or "all"
+    by_file: dict[str, list[str]] = {}
+    for f, s in stale:
+        by_file.setdefault(f.name, []).append(s)
+    tg = " ".join(f"{n}:{','.join(ss)}" for n, ss in by_file.items())
     jobs = a.jobs_remote or rc["jobs"]
     print(f"リモートでレンダリング（-q{a.q}, 並列 {jobs}）")
-    cmd = f"cd {rproj} && .venv/bin/lecanim render {tg} -q {a.q} -j {jobs}" + (" --no-voice" if not voice_on else "")
+    cmd = (f"cd {rproj} && .venv/bin/lecanim render {tg} -q {a.q} -j {jobs} --force --no-qa"
+           + (" --no-voice" if not voice_on else ""))
     p = _ssh(rc["host"], cmd, tunnel=tunnel)
     print("結果を取り込み中")
     _sync_down(r, rc, rproj)
+    if p.returncode == 0:
+        from . import rcache
+        for f, s in stale:
+            if rcache._out(r, f, s, a.q).exists():
+                rcache.mark(r, f, s, a.q, voice_on)
     for f, _ in targets(r, a.targets):
         out = combine(r, f, a.q)
         if out:
@@ -692,7 +781,29 @@ def main(argv=None):
     s.add_argument("--remote", action="store_true", help="lecanim.toml の [remote] のホストでレンダリング")
     s.add_argument("--jobs-remote", type=int, default=0, help="リモートの並列数（既定は [remote] jobs）")
     s.add_argument("--allow-font-mismatch", action="store_true")
+    s.add_argument("--force", action="store_true", help="変更のないシーンも書き出す")
+    s.add_argument("--no-qa", action="store_true", help="書き出しの前の QA（重なり・矢印・ずれ・読み）を省く")
     s.set_defaults(fn=cmd_render)
+    s = sp.add_parser("qa", help="動画を書かずに検査（文字の重なり・矢印・音声と画面のずれ）＋コンタクトシート")
+    s.add_argument("targets", nargs="*")
+    s.add_argument("-j", "--jobs", type=int, default=3)
+    s.add_argument("-v", "--verbose", action="store_true", help="注意もすべて表示")
+    s.set_defaults(fn=cmd_qa)
+    s = sp.add_parser("yomi", help="読み（誤読）の辞書：追加・自動検出・確認")
+    ys = s.add_subparsers(dest="yomi_cmd", required=True)
+    y = ys.add_parser("add", help="語の読みを辞書に追加（既定は利用者の辞書．全プロジェクトで効く）")
+    y.add_argument("surface")
+    y.add_argument("reading")
+    y.add_argument("--scope", choices=["user", "project", "repo"], default="user")
+    y.add_argument("--example", help="その語を含む例文（verify の対象になる）")
+    y = ys.add_parser("ok", help="読みの食い違いを確認し，このままでよいと記録する")
+    y.add_argument("surface")
+    ys.add_parser("list", help="利用者・汎用の辞書を表示")
+    y = ys.add_parser("scan", help="UniDic と VOICEVOX の読みの食い違いを台本から探す")
+    y.add_argument("--strict", action="store_true")
+    ys.add_parser("verify", help="例文つきの項目が期待どおりに読まれるか確かめる")
+    from .yomi import cmd_yomi
+    s.set_defaults(fn=cmd_yomi)
     s = sp.add_parser("check")
     s.add_argument("targets", nargs="*")
     s.add_argument("-q", choices=list(QDIR), default="l")
