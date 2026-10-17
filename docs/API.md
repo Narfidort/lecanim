@@ -90,6 +90,35 @@ LLM 推論の GPU 配置・P/D 分離・遅延の内訳・性能曲線。お手�
   - `TimelineMob(lanes, t_max, box=, ticks=)`：ガント図．`bar(lane, t0, t1, color, label)` で棒を作り `grow(bars)` で伸ばす
 - 色：`ROLE_COLOR`（P＝オレンジ，D＝青，A＝紫）．読み辞書：Prefill, Decode, TTFT, ITL, GPU, MoE, GEMM, AllReduce, 律速…
 
+## 証明のスコープ（`lecanim.domains.narfi`）
+
+Narfi（自然演繹の証明記述言語）風に証明をデータで書き，束縛変数のスコープと依存関係を検査して見せる。
+お手本は複素関数論プロジェクトの `lecture0.py`（ε-N 論法，一様収束）。
+
+- 論理式：`Forall(x, body, bound=">0" | r"\in E" | r"\ge N")`，`Exists`，`Imp`，`And`，`Or`，`Not`，`Bot`，`Atom(tex)`
+  （`bound` が `\in …` なら型，それ以外は条件．`x` はタプルで複数可）
+- 証明の行：`Fix(x, h, body=[…])`（∀導入），`Assume(h, body=)`（⇒導入），`ByContra`，`Obtain(x, h, src, args=[…])`
+  （仮定 src の先頭の ∀ に args を入れて ∃ を外す），`Choose(t)`（∃導入），`Have(h, prop, by)`，`Let(x, t)`，
+  `Chain(start, [(rel, 項, 根拠), …])`（不等式の連鎖），`Just(根拠)`，`Contradiction`，`Cases/Case`．各行に `note=` で短い説明
+- `Thm(名前, goal=, body=, hyps=[(h, 論理式, 表示用の短い形)], params=, lemmas={名前: 論理式})`
+- `check(thm)` → `Trace`：`ok`, `errors`（スコープ外の名前・名前の衝突・goal の形の不一致・閉じていない goal），
+  `deps(name)`（Obtain/let した変数が依存する任意の変数．例：`N(ε)`），`lines[i].ctx / goal / closes`
+- 描画：`ProofMob(trace)`（行と入れ子のスコープ枠．`faint()` で全体を薄く置き `reveal(i)` で1行ずつ），
+  `ContextPanel(trace)`（文脈 Γ：変数は横並び・仮定は縦並び，goal）．`walk(scene, pm, cp, i, 字幕, exit_notes=)` で
+  1行実行（スコープの終わりなら内側から順に出る）．`pm.dep_arrows(name)`（依存の矢印），
+  `scope_bars(MathTex, [(i, j, 色, ラベル)])`（量化子のスコープを式の下の帯で示す）
+- 色：Fix＝青（任意），Obtain＝橙（存在），assume＝緑（仮定），let＝紫（定義），choose＝黄
+
+## 複素平面・関数のグラフ（`lecanim.domains.complex`）
+
+- `PlaneMob(box, xr, yr, ticks=, grid=)`：複素平面．`p(z)`（複素数→画面座標），
+  `dot(z, label)`, `vec(z)`, `seg(z1, z2)`, `disk(c, r, closed=)`（開円板は点線），`ring`, `curve(f, t0, t1)`,
+  `polyline`, `seq(zs)`, `square(c, side)`, `polar(z)`（r と θ の印），`region(pred)`（条件をみたす点を塗る）．
+  部品は平面に入り，平面を動かすと一緒に動く（`add=False` なら返すだけ．どちらも重なり検査の対象外）
+- `PlotMob(box, xr=(lo, hi, step), yr=…)`：実関数のグラフ．`graph(f)`, `band(f, eps)`（ε の帯），`hline`, `vline`, `dots(pts)`
+- 数値検証：`radius_cauchy_hadamard(coef)`, `partial_sums(term, n)`, `sup_dist(f, g, xs)`
+- 読み辞書：複素・正則・共役・偏角・整級数・一様収束・Cauchy・Weierstrass…
+
 `end_card(*points, title=)` で，まとめの見出しを「証明の構造まとめ」以外にできる（実験の動画では「観察のまとめ」など）。
 
 ## 新しい分野
