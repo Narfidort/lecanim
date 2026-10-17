@@ -30,8 +30,13 @@ def test_sum_of_limits_ok_and_dependency():
     tr = check(thm)
     assert tr.ok, tr.errors
     assert tr.deps("N_1") == (E,) and tr.deps("N") == (E,)
-    last = tr.lines[-1]
-    assert len(last.closes) == 2 and last.goal is None
+    exits = [ln for ln in tr.lines if ln.step.kind == "exit"]
+    assert [ln.depth for ln in exits] == [1, 0]          # 内側の n の枠 → 外側の ε の枠の順に出る（字下げが戻る）
+    assert exits[-1].step.concl.startswith(r"\forall \varepsilon")
+    fix_n = next(ln for ln in tr.lines if ln.text[:2] == ["Fix", "$n$"])
+    assert fix_n.head[0].startswith(r"\forall n") and fix_n.intro == ["n", "h_n"]
+    obt = next(ln for ln in tr.lines if ln.text[0] == "Obtain")
+    assert obt.uses == ["h_a", r"\varepsilon"]
 
 
 def test_uniform_from_pointwise_fails_by_scope():

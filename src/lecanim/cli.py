@@ -206,7 +206,10 @@ def combine(r: Path, f: Path, q: str) -> Path | None:
     lst = r / "logs" / f"{f.stem}.concat.txt"
     lst.write_text("".join(f"file '{p}'\n" for p in parts))
     out = r / "media" / "videos" / f.stem / f"{f.stem}_{QDIR[q]}.mp4"
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy",
+    # 映像はそのまま．音声は各シーンの末尾（映像より短い）に隙間ができるので，無音で埋めて連続した音声に作り直す
+    # （-c copy だと MP4 に音声の隙間が入り，2本目以降で再生が途切れる）
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(lst),
+                    "-c:v", "copy", "-af", "aresample=async=1:first_pts=0", "-c:a", "aac", "-b:a", "192k",
                     str(out)], check=True)
     return out
 

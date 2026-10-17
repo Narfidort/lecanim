@@ -26,14 +26,14 @@ import re
 from dataclasses import dataclass, field
 
 import numpy as np
-from manim import (DOWN, LEFT, RIGHT, UP, Arrow, CurvedArrow, FadeIn, FadeOut, Line, Rectangle, Transform,
-                   Triangle, VGroup, Write)
+from manim import (DOWN, LEFT, RIGHT, UP, Arrow, Create, CurvedArrow, FadeIn, FadeOut, Indicate, Line, MathTex,
+                   Rectangle, Transform, Triangle, VGroup, Write)
 
 from .. import voice as _voice
 from ..style import BG, BLUE_E, CORNER, DIM, FG, GREEN_E, ORANGE_E, PURPLE_E, RED_E, YELLOW_E, jp, row
 from ..units import LiveGroup, mark_overlay
 
-__all__ = ["walk", "scope_bars", "Formula", "Atom", "Forall", "Exists", "Imp", "And", "Or", "Not", "Bot", "Iff",
+__all__ = ["walk", "scope_bars", "Formula", "Exit", "Atom", "Forall", "Exists", "Imp", "And", "Or", "Not", "Bot", "Iff",
            "Fix", "Assume", "Obtain", "Choose", "Have", "Let", "ByContra", "Contradiction", "Just", "Chain",
            "Cases", "Case", "Thm", "check", "Trace", "ProofMob", "ContextPanel", "KIND_COLOR", "mentions",
            "subst", "as_formula"]
@@ -377,6 +377,14 @@ class Cases(Step):
 
 
 @dataclass
+class Exit(Step):
+    """スコープを出た所（Narfi には書かない．何が示されたかを ∴ で表示するための行）."""
+    concl: str = ""
+    note: str = ""
+    kind = "exit"
+
+
+@dataclass
 class Thm:
     name: str
     goal: object
@@ -414,8 +422,11 @@ class ProofLine:
     ctx: list                  # この行を実行した後の文脈
     goal: str | None           # この行を実行した後の goal（閉じたら None）
     goal_before: str | None
-    scope_end: int = -1        # スコープを開く行なら，その最後の行
-    closes: list = field(default_factory=list)  # スコープの終わりの行：出た後の結論（内側から順）
+    scope_end: int = -1        # スコープを開く行なら，その最後の行（スコープを出る ∴ の行の直前）
+    closes: list = field(default_factory=list)  # 互換用（使わない）
+    head: tuple | None = None  # goal の先頭で消費される部分 (頭の TeX, 残りの TeX)：Fix / assume / choose
+    uses: list = field(default_factory=list)    # 根拠として使う文脈の名前
+    intro: list = field(default_factory=list)   # この行で文脈に入る名前
 
 
 @dataclass
@@ -446,6 +457,7 @@ class _Checker:
         self.lines: list[ProofLine] = []
         self.errors: list[tuple[int, str]] = []
         self.bound_names: set[str] = set()
+        self._ctx_now: list[Entry] = []
         self._collect(thm.body)
 
     def _collect(self, steps):
@@ -511,9 +523,21 @@ class _Checker:
         return tuple(flat)
 
     # --- 1行を記録
-    def emit(self, step, depth, text, ctx, goal_before, goal_after) -> int:
-        self.lines.append(ProofLine(step, depth, text, list(ctx), _t(goal_after), _t(goal_before)))
+    def emit(self, step, depth, text, ctx, goal_before, goal_after, head=None, uses_in=(), before=None) -> int:
+        before = before if before is not None else self._ctx_now
+        names_before = {norm(e.name) for e in before}
+        intro = [e.name for e in ctx if norm(e.name) not in names_before]
+        used = set()
+        for t in uses_in:      # 添字の中（h_n の n）は数えない
+            used |= {norm(m.group("id")) for m in _TOK.finditer(t or "") if m.group("id")}
+        uses = [e.name for e in before if norm(e.name) in used and e.kind != "param"]
+        self.lines.append(ProofLine(step, depth, text, list(ctx), _t(goal_after), _t(goal_before), head=head,
+                                    uses=uses, intro=intro))
+        self._ctx_now = list(ctx)
         return len(self.lines) - 1
+
+    def exit(self, depth, ctx, concl):
+        self.emit(Exit(concl=_t(concl)), depth, ["∴", f"${_t(concl)}$"], ctx, None, None, before=self._ctx_now)
 
     def block(self, steps, depth, ctx: list[Entry], goal: Formula | None) -> Formula | None:
         """steps を実行して残った goal（閉じたら None）を返す."""
@@ -544,17 +568,20 @@ class _Checker:
             for x in xs:
                 self.fresh(x, new)
                 new.append(Entry(x, "fix"))
+            h = None
             if cond:
                 h = s.h or f"h_{{{xs[0]}}}"
                 new.append(Entry(h, "assume", cond, formula=Atom(cond)))
-            txt = ["Fix", f"${', '.join(xs)}$"] + ([r"$\mid$", f"${s.h or 'h'} : {cond}$"] if cond and s.h else
-                                                    ([f"$({cond})$"] if cond else []))
-            i = self.emit(s, depth, txt, new, g0, inner)
+            typ = goal.bound.strip()[3:].strip() if isinstance(goal, Forall) and _bound_is_type(goal.bound) else None
+            txt = ["Fix", f"${', '.join(xs)}$"] + ([r"$\mid$", f"${h} : {cond}$"] if cond else
+                                                    ([f"$: {typ}$"] if typ else []))
+            head = (goal.head(), goal.body.tex()) if isinstance(goal, Forall) else None
+            i = self.emit(s, depth, txt, new, g0, inner, head=head)
             rest = self.block(s.body, depth + 1, new, inner)
             self.lines[i].scope_end = len(self.lines) - 1
             if rest is not None:
                 self.err(f"Fix {', '.join(xs)} のスコープの最後で goal が閉じていない")
-            self.lines[-1].closes.append(_t(g0))
+            self.exit(depth, ctx, g0)
             return None, ctx
         if isinstance(s, (Assume, ByContra)):
             new = list(ctx)
@@ -571,12 +598,16 @@ class _Checker:
             self.scope_check([prop.tex()], ctx)
             self.fresh(s.h, new)
             new.append(Entry(s.h, kind, prop.tex(), formula=prop))
-            i = self.emit(s, depth, [kw, f"${s.h} : {prop.tex()}$"], new, g0, inner)
+            head = None
+            if isinstance(s, Assume) and isinstance(goal, Imp):
+                a = goal.a.tex(False)
+                head = ((f"({a})" if isinstance(goal.a, (_Bin, _Q)) else a) + r" \Rightarrow", goal.b.tex(False))
+            i = self.emit(s, depth, [kw, f"${s.h} : {prop.tex()}$"], new, g0, inner, head=head)
             rest = self.block(s.body, depth + 1, new, inner)
             self.lines[i].scope_end = len(self.lines) - 1
             if rest is not None:
                 self.err(f"{kw} {s.h} のスコープの最後で goal が閉じていない")
-            self.lines[-1].closes.append(_t(g0))
+            self.exit(depth, ctx, g0)
             return None, ctx
         if isinstance(s, Case):
             new = list(ctx)
@@ -588,13 +619,13 @@ class _Checker:
             self.lines[i].scope_end = len(self.lines) - 1
             if rest is not None:
                 self.err(f"Case {s.pattern} の最後で goal が閉じていない")
+            self.exit(depth, ctx, goal)
             return goal, ctx
         if isinstance(s, Cases):
             self.scope_check([s.on], ctx)
             self.emit(s, depth, ["cases", f"${s.on}$"], ctx, g0, goal)
             for c in s.cases:
                 self.step(c, depth, ctx, goal)
-            self.lines[-1].closes.append(_t(g0))
             return None, ctx
         if isinstance(s, Obtain):
             src = self._lookup(s.src, ctx)
@@ -628,7 +659,8 @@ class _Checker:
             if goal is not None and norm(s.x) in goal.names():
                 self.err(f"Obtain {s.x}：{s.x} が goal に現れている")
             call = s.src + (f"({', '.join(s.args)})" if s.args else "")
-            self.emit(s, depth, ["Obtain", f"${s.x}, {s.h}$", ":", f"${call}$"], new, g0, goal)
+            self.emit(s, depth, ["Obtain", f"${s.x}, {s.h}$", ":", f"${call}$"], new, g0, goal,
+                      uses_in=[s.src, *s.args])
             return goal, new
         if isinstance(s, Choose):
             self.scope_check([s.t], ctx)
@@ -641,7 +673,8 @@ class _Checker:
                 body = body.subst(xs[0], s.t)
                 cond = goal.cond(s.t) if len(xs) == 1 else None
                 inner = And(Atom(cond), body) if cond else body
-            self.emit(s, depth, ["choose", f"${s.t}$"], ctx, g0, inner)
+            head = (goal.head(), goal.body.tex()) if isinstance(goal, Exists) else None
+            self.emit(s, depth, ["choose", f"${s.t}$"], ctx, g0, inner, head=head, uses_in=[s.t])
             return inner, ctx
         if isinstance(s, Have):
             prop = as_formula(s.prop)
@@ -652,7 +685,7 @@ class _Checker:
                 new.append(Entry(s.h, "have", prop.tex(), formula=prop))
             txt = ["have", f"${s.h + ' : ' if s.h else ''}{prop.tex()}$"] + ([":=", s.by] if s.by else [])
             after = None if s.close else goal
-            self.emit(s, depth, txt, new, g0, after)
+            self.emit(s, depth, txt, new, g0, after, uses_in=[s.by])
             return after, new
         if isinstance(s, Let):
             self.scope_check([s.t], ctx)
@@ -673,17 +706,17 @@ class _Checker:
                     self.fresh(s.h, new)
                     new.append(Entry(s.h, "have", f"{s.start} {self._rel(s)} {s.steps[-1][1]}"))
                 self.emit(s, depth + 1, [f"${rel} {t}$"] + (["by", by] if by else []), new, g0,
-                          after if last else goal)
+                          after if last else goal, uses_in=[by])
             return after, new
         if isinstance(s, Contradiction):
             self.scope_check([s.h1, s.h2], ctx)
             if not isinstance(goal, Bot):
                 self.err("contradiction：goal が ⊥ ではない（by_contra の中で使う）")
-            self.emit(s, depth, ["contradiction", f"${s.h1}\\ {s.h2}$"], ctx, g0, None)
+            self.emit(s, depth, ["contradiction", f"${s.h1}\\ {s.h2}$"], ctx, g0, None, uses_in=[s.h1, s.h2])
             return None, ctx
         if isinstance(s, Just):
             self.scope_check([s.by], ctx)
-            self.emit(s, depth, ["by", s.by], ctx, g0, None)
+            self.emit(s, depth, [s.by], ctx, g0, None, uses_in=[s.by])
             return None, ctx
         raise TypeError(f"未知のステップ {s!r}")
 
@@ -718,6 +751,7 @@ def check(thm: Thm) -> Trace:
         f = as_formula(f)
         ctx.append(Entry(h, "hyp", f.tex(), formula=f, short=sh[0] if sh else None))
     goal = as_formula(thm.goal)
+    c._ctx_now = list(ctx)
     rest = c.block(thm.body, 0, ctx, goal)
     if rest is not None:
         c.errors.append((len(c.lines), "証明の最後で goal が閉じていない"))
@@ -745,6 +779,10 @@ class ProofMob(LiveGroup):
         self.indent = indent
         rows_ = []
         for ln in trace.lines:
+            if ln.step.kind == "exit":      # スコープを出た所：字下げを戻し，示されたことを緑で
+                r = row("∴", ln.text[1], size=size * 0.85, color=GREEN_E, buff=0.12)
+                rows_.append(r)
+                continue
             parts = []
             for k, p in enumerate(ln.text):
                 if isinstance(p, str) and p in _KW_COLOR and k == 0 or p in ("by", ":=", ":"):
@@ -805,6 +843,13 @@ class ProofMob(LiveGroup):
             b.set_stroke(opacity=opacity).set_fill(opacity=0.0)
         self._dimmed = True
         return self
+
+    def to_faint(self, opacity: float = 0.18) -> list:
+        """表示済みの証明を薄くして，reveal で1行ずつ追い直す状態にする（Animation のリスト）."""
+        self._dimmed = True
+        self._shown = set()
+        return [*[r.animate.set_opacity(opacity) for r in self.rows],
+                *[b.animate.set_stroke(opacity=opacity).set_fill(opacity=0.0) for b in self.boxes.values()]]
 
     def reveal(self, i: int) -> list:
         if i in self._shown:
@@ -886,7 +931,41 @@ class ContextPanel(LiveGroup):
         self.goal = VGroup()
         self.add(self.frame, self.gamma_title, self.sep, self.goal_title, self.entries, self.goal)
         self._keys: list[str] = []
+        self._names: list[str] = []
         self._base: dict[str, float] = {}
+
+    def entry_mob(self, name: str):
+        for n, m in zip(self._names, self.entries):
+            if norm(n) == norm(name):
+                return m
+        return None
+
+    def highlight(self, names, color=YELLOW_E) -> list:
+        """根拠として使う文脈の項目を囲んで光らせる（囲みは返り値の 2 番目．後で FadeOut）."""
+        anims, boxes = [], VGroup()
+        for n in names:
+            m = self.entry_mob(n)
+            if m is None:
+                continue
+            b = Rectangle(width=m.width + 0.16, height=m.height + 0.1, stroke_color=color, stroke_width=3)
+            b.move_to(m)
+            boxes.add(b)
+            anims.append(Create(b))
+        mark_overlay(boxes)
+        return anims, boxes
+
+    def split_goal(self, head: str, rest: str, kind: str = "fix"):
+        """いまの goal を「消費される先頭」と「残り」の2つに分けた表示に差し替え，先頭の mobject を返す."""
+        sep = r",\ " if not head.rstrip().endswith(r"\Rightarrow") else r"\ "
+        m = MathTex(head + sep, rest, font_size=self.size * 1.05 * 1.25, color=YELLOW_E)
+        maxw = self.r - self.l - 0.3
+        if m.width > maxw:
+            m.scale_to_fit_width(maxw)
+        m.move_to([self.l + 0.15, self.goal_y - 0.45, 0], aligned_edge=UP + LEFT)
+        self.remove(self.goal)
+        self.goal = VGroup(m)
+        self.add(self.goal)
+        return m[0]
 
     def _entry(self, e: Entry) -> VGroup:
         col = KIND_COLOR.get(e.kind, FG)
@@ -960,11 +1039,14 @@ class ContextPanel(LiveGroup):
             ctx += [Entry(h, "hyp", as_formula(f).tex(), short=sh[0] if sh else None) for h, f, *sh in tr.thm.hyps]
         return self._to(self._visible(ctx), goal if goal is not None else _t(as_formula(tr.thm.goal)))
 
-    def state(self, i: int, before: bool = False) -> list:
+    def state(self, i: int, before: bool = False, source=None) -> list:
+        """i 行目を実行した後の文脈と goal へ．source を与えると，新しく入る項目はそこから出てくる."""
         ln = self.trace.lines[i]
         if before:
             return self._to(self._visible(self._ctx_before(i)), ln.goal_before)
-        return self._to(self._visible(ln.ctx), ln.goal)
+        if ln.step.kind == "exit":
+            return self._to(self._visible(ln.ctx), ln.step.concl, done=True)
+        return self._to(self._visible(ln.ctx), ln.goal, source=source)
 
     def _ctx_before(self, i):
         if i == 0:
@@ -985,7 +1067,7 @@ class ContextPanel(LiveGroup):
             return lambda: self._to(self._visible(self._ctx_before(j)), l2.goal_before, done=True)
         return [make(j) for j in self._openers(i)]
 
-    def _to(self, ctx: list[Entry], goal: str | None, done: bool = False) -> list:
+    def _to(self, ctx: list[Entry], goal: str | None, done: bool = False, source=None) -> list:
         keys = [e.show() + e.kind for e in ctx]
         old = {k: m for k, m in zip(self._keys, self.entries)}
         new_ms = [old.get(k) if k in old else self._entry(e) for k, e in zip(keys, ctx)]
@@ -1000,7 +1082,10 @@ class ContextPanel(LiveGroup):
                 anims.append(m.animate.move_to(t.get_center()).scale(t.width / m.width if m.width else 1))
             else:
                 m.move_to(t.get_center())
-                anims.append(FadeIn(m, shift=LEFT * 0.2))
+                if source is not None:
+                    anims.append(FadeIn(m, target_position=source.get_center(), scale=0.6))
+                else:
+                    anims.append(FadeIn(m, shift=LEFT * 0.2))
         for k, m in old.items():
             if k not in keys:
                 anims.append(FadeOut(m, shift=RIGHT * 0.2))
@@ -1014,24 +1099,58 @@ class ContextPanel(LiveGroup):
         self.entries = VGroup(*new_ms)
         self.add(self.entries)
         self._keys = keys
+        self._names = [e.name for e in ctx]
         return anims
 
 
 def walk(scene, pm: ProofMob, cp: ContextPanel | None, i: int, text: str | None = None, extra=(),
-         exit_notes=(), run_time: float = 0.7):
-    """証明の i 行目を実行して見せる：行を書く → カーソル → 文脈と goal を更新 → 字幕．
-    i 行目でスコープが終わるなら，内側から順に出る（exit_notes[k] はその時の字幕）."""
-    scene.play(*pm.reveal(i), *pm.cursor(i), *(cp.state(i) if cp else []), *extra, run_time=run_time)
+         run_time: float = 0.7, **_):
+    """証明の i 行目を実行して見せる.
+
+    1. 行をはっきりさせ，カーソルを移す．字幕（台本）を読み始める
+    2. Fix / assume / choose：goal の先頭（消費される量化子・仮定）を色付きで分けて光らせる
+       根拠を使う行（Obtain / have / 連鎖 / 根拠だけの行）：使う文脈の項目を黄色で囲む
+    3. 文脈と goal を更新（Fix・assume で取り外した先頭は文脈に移る）
+    4. スコープを出る ∴ の行：枠を光らせ，中で導入した名前を消し，示されたことを ✓ で出す
+    """
+    ln = pm.trace.lines[i]
+    scene.play(*pm.reveal(i), *pm.cursor(i), *extra, run_time=run_time)
     if text:
-        scene.note(text)
-    if cp is not None:
-        for k, (j, ex) in enumerate(zip(cp._openers(i), cp.exits(i))):
-            box = pm.box(j)
-            scene.play(*ex(), *([box.animate.set_stroke(width=4)] if box is not None else []), run_time=0.8)
-            if k < len(exit_notes) and exit_notes[k]:
-                scene.note(exit_notes[k])
-            if box is not None:
-                scene.play(box.animate.set_stroke(width=2), run_time=0.3)
+        scene.note(text, block=False)
+    if cp is None:
+        scene.wait_voice()
+        return
+    if ln.step.kind == "exit":
+        j = next((j for j in range(i - 1, -1, -1) if pm.trace.lines[j].step.opens()
+                  and pm.trace.lines[j].scope_end == i - 1 and pm.trace.lines[j].depth == ln.depth), None)
+        box = pm.box(j) if j is not None else None
+        if box is not None:
+            scene.play(box.animate.set_stroke(width=5), run_time=0.5)
+        scene.play(*cp.state(i), run_time=1.0)
+        if box is not None:
+            scene.play(box.animate.set_stroke(width=2), run_time=0.3)
+        scene.wait_voice()
+        return
+    src = None
+    col = KIND_COLOR.get(ln.step.kind, YELLOW_E)
+    if ln.head and ln.goal_before is not None:
+        src = cp.split_goal(*ln.head)
+        scene.play(src.animate.set_color(col).scale(1.12), run_time=0.6)
+        scene.play(Indicate(src, color=col), run_time=0.8)
+        for g in cp.goal:                    # 先頭を goal から切り離して単独で動かす
+            if src in g.submobjects:
+                g.remove(src)
+        scene.add(mark_overlay(src))
+    boxes = VGroup()
+    if ln.uses:
+        anims, boxes = cp.highlight(ln.uses)
+        if anims:
+            scene.play(*anims, Indicate(pm.rows[i], color=YELLOW_E, scale_factor=1.03), run_time=0.8)
+    anims = cp.state(i, source=src if ln.step.kind in ("fix", "assume", "contra") else None)
+    if src is not None:
+        anims.append(FadeOut(src, scale=0.6))
+    scene.play(*anims, *([FadeOut(boxes)] if len(boxes) else []), run_time=1.0)
+    scene.wait_voice()
 
 
 def scope_bars(tex, spans, buff: float = 0.14, gap: float = 0.16, size: float = 20, width: float = 4) -> VGroup:
