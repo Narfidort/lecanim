@@ -543,6 +543,8 @@ class LectureScene(Scene):
 
     def clear_body(self, keep=()):
         """ヘッダ・パンくず・keep 以外の全オブジェクトをフェードアウト."""
+        if QA_MODE:                     # 消す前の画面をコンタクトシートに残す
+            self._story_capture()
         keep_ids = {id(self.header), id(self.crumb), id(self.gloss), *map(id, keep)}
         rm = [m for m in self.mobjects if id(m) not in keep_ids]
         if rm:
@@ -588,7 +590,7 @@ class LectureScene(Scene):
         color = color or ACCENT
         s_ = f"${sym}$" if math else sym
         big = row(s_, "：", meaning, size=30, color=color)
-        if target is not None and big.width > 6.4:   # 図の横の空きに収まるよう「記号：」と意味の2行に折り返す
+        if big.width > 6.4:   # 図の横の空きに収まるよう「記号：」と意味の2行に折り返す（対象がなくても）
             parts = [meaning]
             if row(meaning, size=28).width > 6.4:  # 意味も長ければ，真ん中に近い読点で2行に分ける
                 cuts = [i + 1 for i, ch in enumerate(meaning)
@@ -752,25 +754,31 @@ class LectureScene(Scene):
         m.move_to(best if best is not None else target.get_center())
 
     def _place_anywhere(self, m: Mobject):
-        """対象なしの吹き出し: 本文領域の候補位置のうち, 既存要素と最も重ならない所へ."""
-        occ = self._occupied(exclude=(m,))
-        best, best_score = None, None
-        for y in (1.6, 0.6, -0.6, -1.8, 2.0, -2.3):
-            for x in (0.0, -3.3, 3.3):
-                c = m.copy().move_to([x, y, 0])
-                c.set_x(np.clip(c.get_x(), -6.9 + c.width / 2, 6.9 - c.width / 2))
-                c.set_y(np.clip(c.get_y(), -2.85 + c.height / 2, 2.3 - c.height / 2))
-                l, r, b, t = c.get_left()[0], c.get_right()[0], c.get_bottom()[1], c.get_top()[1]
-                score = 0.0
-                for o in occ:
-                    ol, or_, ob, ot = o.get_left()[0], o.get_right()[0], o.get_bottom()[1], o.get_top()[1]
-                    ox = max(0, min(r, or_) - max(l, ol))
-                    oy = max(0, min(t, ot) - max(b, ob))
-                    score += ox * oy
-                score += 0.02 * abs(y - 1.2) + 0.01 * abs(x)
-                if best_score is None or score < best_score:
-                    best, best_score = c.get_center(), score
-        m.move_to(best)
+        """対象なしの吹き出し：本文領域の格子から，文字・図形と重ならない場所を探す（重ならなければ上・中央寄り）."""
+        items = _qa.collect(self, skip_ids={id(m), id(self.header), id(self.crumb), id(self.gloss)})
+        texts = [i for i in items if i.kind == "text" and i.op >= _qa.MIN_TEXT_OPACITY]
+        others = [i for i in items if i.kind in ("shape", "arrow", "plate") and i.op >= 0.3]
+        w, h = m.width, m.height
+        top = (2.3 if len(self.gloss) else 2.6) - h / 2
+        xs = np.arange(-6.9 + w / 2, 6.9 - w / 2 + 1e-6, 0.3) if w < 13.8 else np.array([0.0])
+        ys = np.arange(-2.8 + h / 2, top + 1e-6, 0.25) if h < 5.3 else np.array([0.0])
+        best, best_cost = None, None
+        for cx in xs:
+            for cy in ys:
+                l, r, b_, t_ = cx - w / 2, cx + w / 2, cy - h / 2, cy + h / 2
+                cost = 0.0
+                for it in texts:
+                    ox, oy = min(r, it.r) - max(l, it.l), min(t_, it.t) - max(b_, it.b)
+                    if ox > 0 and oy > 0:
+                        cost += 20 + 25 * ox * oy
+                for it in others:
+                    ox, oy = min(r, it.r) - max(l, it.l), min(t_, it.t) - max(b_, it.b)
+                    if ox > 0 and oy > 0:
+                        cost += 2 * ox * oy / max(w * h, 1e-6)
+                cost += 0.05 * abs(cx) + 0.03 * abs(cy - 0.8)
+                if best_cost is None or cost < best_cost:
+                    best, best_cost = (cx, cy), cost
+        m.move_to([best[0], best[1], 0])
 
     def recall(self, sym: str):
         """記号メモの該当項目を光らせる."""

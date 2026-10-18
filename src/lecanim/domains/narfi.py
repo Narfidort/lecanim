@@ -809,7 +809,8 @@ class ProofMob(LiveGroup):
 
     def __init__(self, trace: Trace, width: float = 7.4, size: float = 24, line_buff: float = 0.14,
                  indent: float = 0.42, top_left=(-6.8, 2.3), bottom: float = -2.62, title: bool = True,
-                 max_height: float | None = None, faint_opacity: float = 0.2, fit: bool = False):
+                 max_height: float | None = None, faint_opacity: float = 0.2, fit: bool = False,
+                 minimap: bool = False, scope_style: str = "line"):
         super().__init__()
         self.trace = trace
         self.indent = indent
@@ -831,7 +832,10 @@ class ProofMob(LiveGroup):
                 r = VGroup(r, row("— " + ln.step.note, size=size * 0.8, color=DIM)).arrange(RIGHT, buff=0.3)
             rows_.append(r)
         self.rows = VGroup(*rows_)
-        width -= 0.5                          # 右端はミニマップの場所
+        self.show_minimap = minimap
+        self.scope_style = scope_style          # "line"（左の縦線）／"box"（四角で囲む）
+        if minimap:
+            width -= 0.5                      # 右端はミニマップの場所
         # 幅だけで縮める（高さはスクロールで扱う）
         need = max((r.width + ln.depth * indent for r, ln in zip(self.rows, trace.lines)), default=1)
         if need > width:
@@ -882,8 +886,9 @@ class ProofMob(LiveGroup):
             if not self._in_window(i, ys):
                 r.set_opacity(0)
         self.needs_scroll = self._total_h() > self.win_top - self.win_bot
-        self.minimap = self._make_minimap() if self.needs_scroll else VGroup()
-        if self.needs_scroll:
+        self.has_mm = self.needs_scroll and self.show_minimap
+        self.minimap = self._make_minimap() if self.has_mm else VGroup()
+        if self.has_mm:
             self.add(self.minimap)
         self.arrow = Triangle(color=YELLOW_E, fill_opacity=1, stroke_width=0).rotate(-np.pi / 2).scale(0.1)
         mark_overlay(self.arrow)
@@ -982,9 +987,12 @@ class ProofMob(LiveGroup):
         left = self.x0 + ln.depth * self.indent - 0.12
         right = self.right + 0.12
         h = max(top - bot, 0.01)
-        rect = Rectangle(width=right - left, height=h, stroke_color=col, stroke_width=2, fill_color=col,
-                         fill_opacity=0.06)
-        rect.move_to([(left + right) / 2, (top + bot) / 2, 0])
+        if self.scope_style == "line":          # スコープは左の細い縦線だけ（ミニマル）
+            rect = Line([left, top, 0], [left, top - h, 0], color=col, stroke_width=3)
+        else:
+            rect = Rectangle(width=right - left, height=h, stroke_color=col, stroke_width=2, fill_color=col,
+                             fill_opacity=0.06)
+            rect.move_to([(left + right) / 2, (top + bot) / 2, 0])
         if top - bot <= 0.02:
             rect.set_stroke(opacity=0).set_fill(opacity=0)
         return rect
@@ -1052,7 +1060,7 @@ class ProofMob(LiveGroup):
             if i in self.hidden or not (i in self._shown or not self._dimmed):
                 t.set_stroke(opacity=0 if i in self.hidden else self.faint_op).set_fill(opacity=0)
             anims.append(Transform(b, t))
-        if self.needs_scroll:
+        if self.has_mm:
             anims.append(Transform(self._mm_frame, self._mm_frame_target(ys)))
         self._ys_cache = ys
         return anims
@@ -1093,7 +1101,7 @@ class ProofMob(LiveGroup):
         x = self.x0 + self.trace.lines[i].depth * self.indent
         p = np.array([x - 0.18, ys[i] - self.rows[i].height / 2, 0])
         self._cur = i
-        if self.needs_scroll:
+        if self.has_mm:
             y = self.win_top - (i + 0.5) * self._mm_step
             if not hasattr(self, "_mm_dot"):
                 self._mm_dot = mark_overlay(Dot([self._mm_frame.get_x() + 0.22, y, 0], radius=0.04, color=YELLOW_E))
@@ -1168,7 +1176,7 @@ class ContextPanel(LiveGroup):
     """文脈 Γ（いま使える変数・仮定）と goal（いま示すこと）の表示. state(i) で i 行目を実行した後の状態へ."""
 
     def __init__(self, trace: Trace, left: float = 1.4, right: float = 6.9, top: float = 2.2, bottom: float = -2.7,
-                 size: float = 20, show_params: bool = False):
+                 size: float = 20, show_params: bool = False, framed: bool = False):
         super().__init__()
         self.trace = trace
         self.size = size
@@ -1178,7 +1186,8 @@ class ContextPanel(LiveGroup):
         self.gamma_title = row(r"文脈 $\Gamma$（いま使えるもの）", size=size, color=DIM)
         self.goal_title = row("goal（いま示すこと）", size=size, color=DIM)
         self.gamma_title.move_to([left, top, 0], aligned_edge=UP + LEFT)
-        self.frame = Rectangle(width=w, height=top - bottom, stroke_color=DIM, stroke_width=1.2)
+        self.frame = Rectangle(width=w, height=top - bottom, stroke_color=DIM, stroke_width=1.2,
+                               stroke_opacity=1.0 if framed else 0.0)
         self.frame.move_to([(left + right) / 2, (top + bottom) / 2, 0]).shift(UP * 0.05)
         self.frame.stretch_to_fit_height(top - bottom + 0.2)
         self.goal_y = bottom + 1.25
@@ -1215,18 +1224,37 @@ class ContextPanel(LiveGroup):
         return None
 
     def highlight(self, names, color=YELLOW_E) -> list:
-        """根拠として使う文脈の項目を囲んで光らせる（囲みは返り値の 2 番目．後で FadeOut）."""
-        anims, boxes = [], VGroup()
+        """根拠として使う文脈の項目を一瞬光らせる（枠は描かない）. (Animation のリスト, 空の VGroup) を返す."""
+        anims = []
+        for n in names:
+            m = self.entry_mob(n)
+            if m is not None:
+                anims.append(Indicate(m, color=color, scale_factor=1.08))
+        return anims, VGroup()
+
+    def emphasize(self, names, color=YELLOW_E, scale: float = 1.3) -> list:
+        """根拠に使う事実を，その場で大きく・黄色にする（吹き出しを出さずに，中身を読めるように）. restore() で戻す."""
+        anims = []
+        self._emph = getattr(self, "_emph", [])
         for n in names:
             m = self.entry_mob(n)
             if m is None:
                 continue
-            b = Rectangle(width=m.width + 0.16, height=m.height + 0.1, stroke_color=color, stroke_width=3)
-            b.move_to(m)
-            boxes.add(b)
-            anims.append(Create(b))
-        mark_overlay(boxes)
-        return anims, boxes
+            self._emph.append((m, m.copy()))
+            m._qa_allow = True
+            for x in m.get_family():
+                x._qa_allow = True
+            tgt = m.copy()
+            tgt.scale(scale, about_edge=LEFT)
+            if len(tgt) > 1:
+                tgt[1].set_color(color)           # ラベル（任意・既知…）の色はそのまま，本文だけ黄色に
+            anims.append(Transform(m, tgt))
+        return anims
+
+    def restore(self) -> list:
+        anims = [Transform(m, orig) for m, orig in getattr(self, "_emph", [])]
+        self._emph = []
+        return anims
 
     def split_goal(self, head: str, rest: str, kind: str = "fix"):
         """いまの goal を「消費される先頭」と「残り」の2つに分けた表示に差し替え，先頭の mobject を返す."""
@@ -1357,6 +1385,8 @@ class ContextPanel(LiveGroup):
             if k in old:
                 anims.append(m.animate.move_to(t.get_center()).scale(t.width / m.width if m.width else 1))
             else:
+                if m.width > 0 and t.width > 0:
+                    m.scale(t.width / m.width)      # 目標の大きさにそろえてから置く（そろえないと重なる）
                 m.move_to(t.get_center())
                 if source is not None:
                     anims.append(FadeIn(m, target_position=source.get_center(), scale=0.6))
@@ -1380,6 +1410,8 @@ class ContextPanel(LiveGroup):
 
 
 _FACT_KINDS = ("hyp", "have", "assume", "contra")
+BENCH_BG = "#1f2230"       # 事実の中身を展開して見る場所：背景を少しだけ明るく
+BENCH_FRAME = True         # 細い枠も引く
 _ORIGIN = {"fix": "Fix で仮定した", "obtain": "Obtain で取り出した", "have": "have で示した", "assume": "assume で仮定した",
            "contra": "by_contra で仮定した", "let": "let で定義した", "case": "Case で仮定した", "just": "", "exit": ""}
 
@@ -1395,7 +1427,10 @@ def _fact_callout(pm: ProofMob, cp: "ContextPanel", names: list[str], i: int, si
         where = "定理の仮定" if j is None else _ORIGIN.get(pm.trace.lines[j].step.kind, "")
         if j is not None and not pm.visible(j):
             where += "（画面外）"
-        body = e.short if e.short else f"${e.tex}$"
+        if e.short and ("$" in e.short or not e.short.isascii()):
+            body = e.short                       # 日本語まじりの短い表示
+        else:
+            body = f"${e.short or e.tex}$"
         r = row(f"${e.name}$", "：", body, size=size, color=FG)
         r[0].set_color(YELLOW_E)
         tag = row(f"← {where}", size=size * 0.75, color=DIM)
@@ -1407,7 +1442,7 @@ def _fact_callout(pm: ProofMob, cp: "ContextPanel", names: list[str], i: int, si
     if rows_.width > maxw:
         rows_.scale_to_fit_width(maxw)
     bg = Rectangle(width=rows_.width + 0.3, height=rows_.height + 0.24, fill_color=BG, fill_opacity=0.95,
-                   stroke_color=YELLOW_E, stroke_width=2)
+                   stroke_width=0)
     g = VGroup(bg, rows_)
     rows_.move_to(bg)
     r = pm.rows[i]
@@ -1430,9 +1465,12 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
     top_y = pm.rows[i_row].get_bottom()[1] - 0.12          # いまの行は見えたまま，その下に作業台を開く
     bot_y = pm.win_bot + 0.05                              # 字幕にかからない
     h_b = min(max(top_y - bot_y, 2.3), 3.5)
-    bg = Rectangle(width=r - l, height=h_b, fill_color=BG, fill_opacity=0.97, stroke_color=ORANGE_E, stroke_width=2)
+    from manim import RoundedRectangle
+    from ..style import LINE
+    bg = RoundedRectangle(corner_radius=0.08, width=r - l, height=h_b, fill_color=BENCH_BG, fill_opacity=1,
+                          stroke_color=LINE, stroke_width=1.2 if BENCH_FRAME else 0)
     bg.move_to([(l + r) / 2, top_y - h_b / 2, 0])
-    title = row(f"事実 ${src}$ に代入して，中身を取り出す", size=22, color=ORANGE_E)
+    title = row(f"${src}$ の中身を展開する", size=20, color=DIM)
     title.move_to(bg.get_top() + DOWN * 0.3).align_to(bg.get_left() + RIGHT * 0.2, LEFT)
     bench = mark_overlay(VGroup(bg, title))
     bench._qa_modal = True                  # 作業台は意図して下の証明を覆う
@@ -1545,7 +1583,7 @@ def _changes(ln) -> bool:
 
 
 def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | None = None, extra=(),
-         run_time: float = 0.7, fold: bool = True, **_):
+         run_time: float = 0.7, fold: bool = False, callout: bool = False, **_):
     """証明の i 行目を実行して見せる．動きは台本の合図〔名前〕に合わせて起こす（合図がなければ音声全体に等間隔）.
 
     reveal  行をはっきりさせ（必要ならスクロール），カーソルを移す
@@ -1600,7 +1638,9 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
         anims, boxes = cp.highlight(ln.uses)
         facts = [n for n in ln.uses if (e := cp.entry_of(n)) is not None and e.kind in _FACT_KINDS
                  and not (ln.unpack and norm(n) == norm(ln.unpack["src"]))]
-        callout = _fact_callout(pm, cp, facts, i) if facts else None
+        callout = _fact_callout(pm, cp, facts, i) if (facts and callout) else None
+        if facts and not callout:
+            anims = [a for a in anims if not isinstance(a, Indicate)] + cp.emphasize(facts)
         for n in facts:
             j = pm.line_of(n)
             if j is not None and pm.visible(j):
@@ -1623,8 +1663,9 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
     scene.pulse(*([callout] if callout is not None else [pm.rows[i]]))
     scene.wait_voice()
     outs = [m for m in (bench, callout) if m is not None]
-    if outs:
-        scene.play(*[FadeOut(m) for m in outs], run_time=0.5)
+    back = cp.restore()
+    if outs or back:
+        scene.play(*[FadeOut(m) for m in outs], *back, run_time=0.5)
 
 
 def scope_bars(tex, spans, buff: float = 0.14, gap: float = 0.16, size: float = 20, width: float = 4) -> VGroup:

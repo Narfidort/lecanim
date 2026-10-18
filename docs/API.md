@@ -115,14 +115,15 @@ Narfi（自然演繹の証明記述言語）風に証明をデータで書き，
 - `Thm(名前, goal=, body=, hyps=[(h, 論理式, 表示用の短い形)], params=, lemmas={名前: 論理式})`
 - `check(thm)` → `Trace`：`ok`, `errors`（スコープ外の名前・名前の衝突・goal の形の不一致・閉じていない goal），
   `deps(name)`（Obtain/let した変数が依存する任意の変数．例：`N(ε)`），`lines[i].ctx / goal / closes`
-- 描画：`ProofMob(trace, size=, width=, fit=)`（行と入れ子のスコープ枠．文字の大きさは固定で，長い証明は
-  いまの行が見えるよう自動スクロール・外側のスコープの見出しを上に固定（sticky）・右端にミニマップ・
-  出たスコープは `fold(j)` で「⋯」に畳む．`fit=True` は全体を窓に収める（記法の説明用）．
+- 描画：`ProofMob(trace, size=, width=, fit=, scope_style="line"|"box", minimap=False)`（スコープは既定で左の細い縦線．
+  文字の大きさは固定で，長い証明はいまの行が見えるよう自動スクロール・外側のスコープの見出しを上に固定（sticky）．
+  ミニマップ・`fold(j)` の畳みは既定では使わない（画面が込み入るため）．`fit=True` は全体を窓に収める（記法の説明用）．
   `faint()` で全体を薄く置き `reveal(i)` で1行ずつ，`unfold_all()` で全体に戻す），
-  `ContextPanel(trace)`（文脈 Γ：変数は横並び・仮定は縦並び，goal．一度も根拠に使わない事実は薄く）．
-  `walk(scene, pm, cp, i, 字幕)` で1行実行：goal の先頭が外れて文脈へ移る／根拠の事実を囲み，中身と出どころ
-  （「← Obtain で取り出した（画面外）」）を行の近くに出す／Obtain と `Just(根拠, src=, args=)` は作業台で
-  ∀ に1つずつ代入して剥がし ∃ の変数を取り出す／∴ 行でスコープを出て畳む．`pm.dep_arrows(name)`（依存の矢印），
+  `ContextPanel(trace, framed=False)`（文脈 Γ：変数は横並び・仮定は縦並び，goal．一度も根拠に使わない事実は薄く．
+  根拠に使う事実は `emphasize()` でその場で大きく黄色に，`restore()` で戻す）．
+  `walk(scene, pm, cp, i, 字幕)` で1行実行：goal の先頭が外れて文脈へ移る／根拠の事実を文脈の中で大きく表示（`callout=True` で
+  行の近くに吹き出し）／Obtain と `Just(根拠, src=, args=)` は事実の中身を展開し（背景を少し明るくした領域），
+  ∀ に1つずつ代入して剥がし ∃ の変数を取り出す／∴ 行でスコープを出る（`fold=True` で畳む）．`pm.dep_arrows(name)`（依存の矢印），
   `scope_bars(MathTex, [(i, j, 色, ラベル)])`（量化子のスコープを式の下の帯で示す）
 - 色：Fix＝青（任意），Obtain＝橙（存在），assume＝緑（仮定），let＝紫（定義），choose＝黄
 
