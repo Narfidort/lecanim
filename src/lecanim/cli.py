@@ -715,7 +715,7 @@ def render_remote(r: Path, a) -> None:
         port = load(r)["voice"]["url"].rsplit(":", 1)[-1].strip("/")
         tunnel = f"{port}:127.0.0.1:{port}"     # リモートからもローカルの VOICEVOX を使う
     stale = _stale(r, [(f, s) for f, ss in targets(r, a.targets) for s in ss], a)
-    if stale and not a.no_qa and voice:
+    if stale and not a.no_qa and voice_on:
         if run_qa(r, stale, 3):
             sys.exit("QA にエラーがあります．直してから書き出してください（無視するなら --no-qa）")
     if not stale:
