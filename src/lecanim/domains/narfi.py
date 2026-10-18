@@ -955,7 +955,7 @@ class ProofMob(LiveGroup):
                 self.offset = max(0.0, self.offset)
                 ys = self._ys()
             # 全体が窓に収まるならスクロールしない（畳んだ後など）
-            if self._total_h() <= self.win_top - self.win_bot - 0.05:
+            if not top and self._total_h() <= self.win_top - self.win_bot - 0.05:
                 self.offset = 0.0
                 ys = self._ys()
             pins = [j for j in (self._enclosing(focus) if focus is not None else []) if ys[j] > eff_top + 0.01]
@@ -1452,6 +1452,12 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
     scene.play(FadeIn(bench), run_time=0.5)
     scene.play(FadeIn(F, target_position=entry.get_center() if entry is not None else F.get_center(), scale=0.5),
                run_time=0.9)
+    hl_boxes = VGroup()
+    if ln.uses:                              # 開いた事実と，代入に使う名前を文脈の中で囲む
+        scene.cue("uses")
+        anims_h, hl_boxes = cp.highlight(ln.uses)
+        if anims_h:
+            scene.play(*anims_h, run_time=0.6)
     nsub = -1
     for k, st in enumerate(stages):
         if "var" not in st:
@@ -1461,17 +1467,26 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
         head = F[0]
         chip = row(f"${st['arg']}$", "を入れる", size=24, color=BLUE_E).next_to(head, UP, buff=0.25)
         mark_overlay(chip)
-        scene.play(head.animate.set_color(BLUE_E), FadeIn(chip, shift=DOWN * 0.2), run_time=0.6)
-        scene.play(Indicate(head, color=BLUE_E), run_time=0.7)
+        scene.play(head.animate.set_color(BLUE_E), FadeIn(chip, shift=DOWN * 0.2), run_time=0.5)
+        scene.play(Indicate(head, color=BLUE_E), run_time=0.4)
         nxt = next((s2 for s2 in stages[k + 1:] if "parts" in s2), None)
         if nxt is None:
             break
         G = tex(nxt["parts"])
-        scene.play(FadeOut(head, shift=UP * 0.3), FadeOut(chip, target_position=head.get_center()),
-                   ReplacementTransform(VGroup(*F[1:]), G), run_time=1.0)
+        # 古い式を「頭」と「残り」の複製に置き換えてから変形する（元の式が重なって残らないように）
+        head_c = head.copy()
+        rest_c = mark_overlay(VGroup(*[p.copy() for p in F[1:]]))
+        mark_overlay(head_c)
+        scene.remove(F)
+        scene.add(head_c, rest_c)
+        bench.add(head_c, rest_c)
+        scene.play(FadeOut(head_c, shift=UP * 0.3), FadeOut(chip, target_position=head.get_center()),
+                   Transform(rest_c, G.copy()), run_time=0.8)
+        bench.remove(head_c, rest_c)
+        scene.remove(head_c, rest_c)
         scene.add(G)
         F = G
-        scene.play(Indicate(F, color=BLUE_E, scale_factor=1.04), run_time=0.6)
+        scene.play(Indicate(F, color=BLUE_E, scale_factor=1.04), run_time=0.4)
     last = stages[-1]
     if "extract" in last and len(F) > 1:
         scene.cue("extract")
@@ -1497,11 +1512,11 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
         scene.play(F.animate.set_color(GREEN_E), FadeIn(ok), Indicate(cp.goal, color=GREEN_E), run_time=0.8)
         bench.add(ok)
     bench.add(F)
-    return bench, F
+    return bench, F, hl_boxes
 
 
 # 各動きにかかる時間の目安（秒）．合図を自動で置くとき，次の動きまでこの間隔をあける
-_STEP_SECONDS = {"reveal": 1.0, "head": 1.6, "uses": 1.0, "open": 1.6, "sub": 3.0, "extract": 2.0, "match": 1.5,
+_STEP_SECONDS = {"reveal": 1.0, "head": 1.6, "uses": 1.0, "open": 1.6, "sub": 2.2, "extract": 2.0, "match": 1.5,
                  "state": 1.2, "exit": 2.4}
 
 
@@ -1512,14 +1527,21 @@ def _cue_names(ln) -> list[str]:
     names = ["reveal"]
     if ln.head and ln.goal_before is not None:
         names.append("head")
+    if ln.unpack:
+        names.append("open")
     if ln.uses:
         names.append("uses")
     if ln.unpack:
-        names.append("open")
         names += [f"sub{k}" for k in range(sum(1 for st in ln.unpack["stages"] if "var" in st))]
         names.append("extract" if "extract" in ln.unpack["stages"][-1] else "match")
-    names.append("state")
+    if _changes(ln):
+        names.append("state")
     return names
+
+
+def _changes(ln) -> bool:
+    """この行で文脈か goal が変わるか（変わらないなら更新の動きを入れない）."""
+    return bool(ln.intro) or ln.goal != ln.goal_before or ln.step.kind in ("exit",)
 
 
 def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | None = None, extra=(),
@@ -1573,7 +1595,7 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
         scene.add(mark_overlay(src))
     boxes = VGroup()
     callout = None
-    if ln.uses:
+    if ln.uses and not ln.unpack:
         scene.cue("uses")
         anims, boxes = cp.highlight(ln.uses)
         facts = [n for n in ln.uses if (e := cp.entry_of(n)) is not None and e.kind in _FACT_KINDS
@@ -1587,14 +1609,18 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
             scene.play(*anims, *([FadeIn(callout)] if callout is not None else []), run_time=0.8)
     bench = None
     if ln.unpack:
-        bench, F = _workbench(scene, pm, cp, ln)
+        bench, F, boxes = _workbench(scene, pm, cp, ln)
         if ln.step.kind == "obtain":
             src = F
-    scene.cue("state")
-    anims = cp.state(i, source=src if ln.step.kind in ("fix", "assume", "contra", "obtain") else None)
-    if src is not None and ln.step.kind != "obtain":
-        anims.append(FadeOut(src, scale=0.6))
-    scene.play(*anims, *([FadeOut(boxes)] if len(boxes) else []), run_time=1.0)
+    if _changes(ln):
+        scene.cue("state")
+        anims = cp.state(i, source=src if ln.step.kind in ("fix", "assume", "contra", "obtain") else None)
+        if src is not None and ln.step.kind != "obtain":
+            anims.append(FadeOut(src, scale=0.6))
+        scene.play(*anims, *([FadeOut(boxes)] if len(boxes) else []), run_time=1.0)
+    elif len(boxes):
+        scene.play(FadeOut(boxes), run_time=0.4)
+    scene.pulse(*([callout] if callout is not None else [pm.rows[i]]))
     scene.wait_voice()
     outs = [m for m in (bench, callout) if m is not None]
     if outs:

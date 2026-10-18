@@ -139,7 +139,13 @@ def collect(scene, skip_ids=()) -> list[Item]:
         visit(m, None, False, False)
         for it in items[n0:]:
             it.top = type(m).__name__
-    return items
+    # 文字の部分（MathTex の一部）が別の入れ物からも届く場合，部分は全体に含めて数える
+    texts = [i for i in items if i.kind == "text"]
+    inner = set()
+    for t in texts:
+        fam = {id(x) for x in t.obj.get_family()} - {id(t.obj)}
+        inner |= fam
+    return [i for i in items if not (i.kind == "text" and id(i.obj) in inner)]
 
 
 def _overlap(a: Item, b: Item):
@@ -277,14 +283,16 @@ def save_annotated(img: np.ndarray, boxes, path) -> None:
     im.save(path)
 
 
-def contact_sheet(frames, prefix, cols: int = 4, per_page: int = 24) -> list:
-    """[(時刻, 台本, 画像)] → 台本つきのコンタクトシート（ページ分け）．書き出し前に全体を一覧するためのもの."""
+def contact_sheet(frames, prefix, cols: int = 3, per_page: int = 18) -> list:
+    """[(時刻, 台本, 画像)] → 台本つきのコンタクトシート（ページ分け）．書き出し前に全体を一覧するためのもの.
+    各コマの上に，その場面の終わりの時刻と，直前に読んだ台本の冒頭（折り返して全文に近く）を載せる."""
     from PIL import Image, ImageDraw
     if not frames:
         return []
     h, w = frames[0][2].shape[:2]
-    lab_h = 34
-    font = _font(14)
+    font = _font(15)
+    per_line = max(10, int(w / 15.5))         # 1 行に入る文字数（全角）
+    lab_h = 20 + 19 * 3
     paths = []
     for pg in range(0, len(frames), per_page):
         chunk = frames[pg:pg + per_page]
@@ -293,10 +301,15 @@ def contact_sheet(frames, prefix, cols: int = 4, per_page: int = 24) -> list:
         dr = ImageDraw.Draw(sheet)
         for k, (t, text, img) in enumerate(chunk):
             x, y = (k % cols) * w, (k // cols) * (h + lab_h)
+            dr.text((x + 4, y + 2), f"{t:6.1f}s", fill=(255, 209, 102), font=font)
+            first = per_line - 4                              # 1 行目は時刻のぶん短い
+            segs = [text[:first], text[first:first + per_line], text[first + per_line:first + 2 * per_line]]
+            for q, seg in enumerate(segs):
+                if seg:
+                    dr.text((x + 62 if q == 0 else x + 4, y + 2 if q == 0 else y + 22 + 19 * (q - 1)), seg,
+                            fill=(235, 235, 235), font=font)
             sheet.paste(Image.fromarray(img), (x, y + lab_h))
-            dr.text((x + 4, y + 2), f"{t:6.1f}s {text[:30]}", fill=(255, 209, 102), font=font)
-            if len(text) > 30:
-                dr.text((x + 4, y + 18), text[30:62], fill=(200, 200, 200), font=font)
+            dr.rectangle([x, y + lab_h, x + w - 1, y + lab_h + h - 1], outline=(70, 70, 80))
         p = f"{prefix}_{pg // per_page + 1}.png"
         sheet.save(p)
         paths.append(p)

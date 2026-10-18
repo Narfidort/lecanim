@@ -90,6 +90,18 @@ LLM 推論の GPU 配置・P/D 分離・遅延の内訳・性能曲線。お手�
   - `TimelineMob(lanes, t_max, box=, ticks=)`：ガント図．`bar(lane, t0, t1, color, label)` で棒を作り `grow(bars)` で伸ばす
 - 色：`ROLE_COLOR`（P＝オレンジ，D＝青，A＝紫）．読み辞書：Prefill, Decode, TTFT, ITL, GPU, MoE, GEMM, AllReduce, 律速…
 
+## 音声と画面の同期（`LectureScene`）
+
+| メソッド | 役割 |
+|---|---|
+| `cue(name, lead=0)` | 台本の〔name〕を読み始める時刻まで待つ（過ぎていれば待たず，遅れを記録）．自動の合図：`s0, s1, …`（文の頭），`end` |
+| `plan_cues(names, seconds=None)` | 台本にない合図を前後の間に等間隔で補う（`seconds` で動きの長さを考慮） |
+| `pulse(*mobs)` | 音声が続くあいだ，文の頭ごとに mobs を光らせる |
+| `speak(text)` | 台本（合図つき）を読み始める．合図の時刻は `voice.timeline()` が音素長から予測 |
+
+`voice.prepare(text)`（読み上げ文と合図の位置），`voice.timeline(text)`（合図の時刻）．検査：`lecanim.qa`（`check_all(scene)`，`Item/Issue`）．
+部品に `_qa_target`（矢印が指す対象）や `_qa_modal = True`（意図して他を覆う板）をつけると検査が正しく判定する．
+
 ## 証明のスコープ（`lecanim.domains.narfi`）
 
 Narfi（自然演繹の証明記述言語）風に証明をデータで書き，束縛変数のスコープと依存関係を検査して見せる。

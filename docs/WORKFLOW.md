@@ -63,6 +63,54 @@ uv run lecanim beats lecture6
 
 再度 `lecanim beats` を実行して「台本はすべての場面をカバーしています」になれば完了。
 
+## 3.5 音声と画面を合わせる（台本の合図）
+
+画面の動きは，台本でそれを言う瞬間に起こす．台本の文に **合図 `〔名前〕`** を置き，コードで `self.cue("名前")` と書く：
+
+```python
+self.note("…", block=False)       # 台本を読み始める（字幕は出る）
+self.cue("d")                     # 台本の〔d〕を読み始める時刻まで待つ
+self.play(...)                    # その動きを起こす
+self.cue("l"); self.play(...)
+self.wait_voice()                 # 読み終わるまで待つ
+```
+
+```
+例として、…という数列を〔d〕描きました。この数列は、1の上と下を〔z〕交互に行き来しながら、〔l〕1に近づいていきます。
+```
+
+* 発音時刻は VOICEVOX の音素長から音声を作る前に予測する（実測誤差 0.01〜0.08 秒）．合図は「その位置を読み始める時刻」．
+  動きを言葉の直後にしたいなら，言い終わりの位置に置く．`cue("名前", lead=0.3)` で少し早く動き出せる．
+* 合図を書かなくても，文の頭が `s0, s1, …`，終わりが `end` で使える．`plan_cues([...])` は台本にない合図を等間隔で補う．
+* `explain()` の説明は `〔hl〕`（項の色付け・括弧）と `〔act〕`（図の上の動き）を置ける．`define()` は長い説明のとき文の頭ごとに対象を光らせる．
+* `domains.narfi.walk()` は `reveal / head / open / uses / sub0… / extract / match / state / exit` の合図を持つ（`docs/API.md`）．
+* 動きが前の動きに追いつかないと「合図 x に N 秒遅れた」と報告される → 台本を長くするか動きを短くする．
+
+## 3.6 書き出しの前に QA（動画を書かない）
+
+```bash
+uv run lecanim qa lecture6          # 1シーンあたり十数秒．動画は書かない
+```
+
+* **エラー**（書き出しを止める）：文字どうしの重なり，不透明な板が文字を覆う，矢印が指す対象から離れている／文字を横切る，
+  画面外，台本の不足，合図が 1.5 秒以上遅れた，**読みの食い違い**（UniDic と VOICEVOX が違う語）．
+* **注意**：音声が 8 秒以上続くのに画面が動かない，合図が 0.5 秒以上遅れた，台本の合図を使っていない．
+* `qa_frames/<Scene>_story_N.png`：台本つきのコンタクトシート（各場面の終わりの画面＋読んだ文）．ここを見れば動画を再生しなくても流れが分かる．
+* `qa_frames/issues/`：問題の画面（赤枠つき）．`qa_reports/<Scene>.sync.txt`：音声の合図の時刻と，その時刻に始まった動きの対応表．
+* `lecanim render` は書き出しの前に自動で QA を走らせ，エラーがあれば止まる（`--no-qa` で省ける）．
+
+## 3.7 読み（誤読）を溜める
+
+```bash
+uv run lecanim yomi scan              # 台本の読みを UniDic と VOICEVOX で突き合わせ，食い違う語を列挙
+uv run lecanim yomi add 行 ぎょう --example "字下げされた行が"   # 直す（既定は利用者の辞書．全プロジェクトで効く）
+uv run lecanim yomi ok 小             # 確認してこのままでよい語
+uv run lecanim yomi verify            # 例文つきの辞書項目が期待どおりに読まれるか確かめる（回帰確認）
+```
+
+辞書の層：プロジェクト `yomi.toml` → 利用者 `~/.config/lecanim/yomi.toml` → 分野 `YOMI` → 汎用（`voice.BASE_WORDS` と `data/yomi/learned.toml`）．
+誤読は耳で見つけず，`qa` / `yomi scan` が書き出しの前に拾う．指摘された語は必ず辞書に入れる（`--scope repo` でリポジトリに入れて共有できる）．
+
 ## 4. 音声つきで確認
 
 ```bash
@@ -95,6 +143,11 @@ uv run lecanim render lecture6 -q h --remote
 - 速度：エンコードは libx264 veryfast，静止区間は可変フレームレートで書く（`[render] encoder` / `vfr_still`）。
   実測（RTX 5060 Ti，ナレーション付き 1080p60・約4分のシーン）：manim 既定 204 秒 → 50 秒。
   NVENC（`encoder = "nvenc"`）は 69 秒と遅く，短い play が続くシーンで segfault することがあるので既定にしない。
+
+## 4.6 差分書き出し
+
+`lecanim render` は，前回から変わっていないシーン（ソース・台本の読み・設定・lecanim 本体が同じ）を書き出さない．
+読みの辞書を直したときは，その語を含む台本のシーンだけが作り直される．`--force` で全部作り直す．
 
 ## 5. 仕上げ
 

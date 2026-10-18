@@ -12,6 +12,7 @@ from __future__ import annotations
 import itertools  # noqa: F401
 import math  # noqa: F401
 import os
+import re
 import sys
 
 import numpy as np
@@ -56,6 +57,7 @@ class LectureScene(Scene):
         self._cue_used: set[str] = set()
         self._speech_t0 = 0.0
         self._busy: list[tuple[float, float]] = []      # 画面が動いていた区間
+        self._plays: list[tuple[float, float, list]] = []
         self._speeches: list[tuple[float, float, str]] = []
         self._sync_log: list[tuple[str, float, float]] = []
         self._issue_prev: set[str] = set()
@@ -193,6 +195,14 @@ class LectureScene(Scene):
             self.wait(dt)
         self._sync_log.append((name, target, self.renderer.time))
         return True
+
+    def pulse(self, *mobs, color=None, scale: float = 1.06) -> None:
+        """音声が続くあいだ，文の頭ごとに mobs を光らせる（説明が続く場面で画面が止まらないように）."""
+        names = sorted((n for n in self._cues if re.fullmatch(r"s[1-9]\d*", n)), key=self._cues.get)
+        for n in names:
+            if self._cues[n] - self.renderer.time > 0.8 and self._cues.get("end", 0) - self._cues[n] > 1.0:
+                self.cue(n)
+                self.play(*[Indicate(m, color=color or YELLOW_E, scale_factor=scale) for m in mobs], run_time=0.7)
 
     def plan_cues(self, names: list[str], seconds: dict | None = None) -> None:
         """台本にない合図を，前後の合図の間に等間隔で補う（合図を書かなくても，動きが音声全体に散る）.
@@ -412,6 +422,7 @@ class LectureScene(Scene):
         t1 = self.renderer.time
         if not (len(args) == 1 and isinstance(args[0], Wait)) and t1 > t0:
             self._busy.append((t0, t1))
+            self._plays.append((t0, t1, [type(a).__name__ for a in args][:4]))
         self._regroup()
         self._qa_check()
         self._qa_geometry(final=True)
@@ -464,6 +475,7 @@ class LectureScene(Scene):
         frames_note = {}
         if QA_MODE:
             frames_note = self._save_qa_images(name)
+            self._sync_timeline(name)
         lines_ = [f"{t:7.1f}s  {m}" + (f"  → {frames_note[m]}" if m in frames_note else "")
                   for m, t in sorted(self._qa_msgs.items(), key=lambda x: x[1])]
         f.write_text("\n".join(lines_) + ("\n" if lines_ else ""))
@@ -490,6 +502,20 @@ class LectureScene(Scene):
             if gap > 7:
                 self._qa_msgs.setdefault(f"[W] 音声が続く {gap:.0f} 秒のあいだ画面が動かない: {label}", t0)
 
+    def _sync_timeline(self, name: str):
+        """音声と画面の動きの対応表（qa_reports/<シーン>.sync.txt）：台本の合図の時刻と，その時刻に始まった動き."""
+        out = []
+        sync = sorted(self._sync_log, key=lambda x: x[1])
+        for t0, t1, label in self._speeches:
+            out.append(f"■ {t0:6.1f}–{t1:6.1f}s  {label}")
+            for a, b, names in self._plays:
+                if t0 - 0.05 <= a < t1:
+                    cues = [c for c, tt, act in sync if abs(act - a) < 0.08 and t0 - 0.05 <= tt < t1]
+                    out.append(f"    {a - t0:5.1f}s  ▶ {','.join(names)} ({b - a:.1f}s)" + (f"   合図 {','.join(cues)}" if cues else ""))
+        d = ROOT / "qa_reports"
+        d.mkdir(exist_ok=True)
+        (d / f"{name}.sync.txt").write_text("\n".join(out) + "\n")
+
     def _save_qa_images(self, name: str) -> dict:
         """問題の画面（赤枠つき）とコンタクトシートを qa_frames/ に保存する."""
         out = {}
@@ -499,7 +525,7 @@ class LectureScene(Scene):
             f = d / "issues" / f"{name}_{k:02d}.png"
             _qa.save_annotated(img, boxes, f)
             out[f"[E] {msg}"] = str(f.relative_to(ROOT))
-        _qa.contact_sheet(self._story, d / f"{name}_story", cols=4, per_page=24)
+        _qa.contact_sheet(self._story, d / f"{name}_story", cols=3, per_page=18)
         return out
 
     def show(self, *mobs, anim=FadeIn, run_time=0.8, overlay=False, **kw):
@@ -602,6 +628,11 @@ class LectureScene(Scene):
         self.play(*anims, run_time=0.8)
         if target is not None:
             self.play(Indicate(target, color=color, scale_factor=1.15), run_time=0.9)
+            # 長い説明では，文の頭ごとに対象をもう一度光らせる（音声が続くあいだ画面が止まらないように）
+            for n in sorted((n for n in self._cues if re.fullmatch(r"s[1-9]\d*", n)), key=self._cues.get):
+                if self._cues[n] - self.renderer.time > 0.8 and self._cues["end"] - self._cues[n] > 1.0:
+                    self.cue(n)
+                    self.play(Indicate(target, color=color, scale_factor=1.12), run_time=0.7)
         if VOICE_ON:
             self.wait_voice(0.3)
         else:
@@ -777,8 +808,10 @@ class LectureScene(Scene):
             self.overlay(br, lab)
             self.wait_voice(0.1)
             self.speak(note, kind="ex")
+            self.cue("hl")                       # 台本の〔hl〕：項を色付けして括弧と説明を出す（既定は読み始め）
             self.play(sub.animate.set_opacity(1).set_color(col), GrowFromCenter(br), FadeIn(lab), run_time=0.6)
             if action:
+                self.cue("act")                  # 台本の〔act〕：図の上での動き（既定は読み始め）
                 action()
             if VOICE_ON:
                 self.wait_voice(0.4)
