@@ -8,7 +8,7 @@
 * `BlockMatrixMob()`：行列・ベクトルを矩形として並べる（X=[X1|X2]，Y=Xβ+ε，2×2 の分割行列）．
     col_blocks(specs) / grid2x2(...) / eq(*parts)
 * `DistMob(box, xr, yr)`：密度関数のグラフ＋棄却域の塗り＋検定統計量の位置（t/F/χ² 検定の図）．
-    density(pdf) / tail(pdf, x0, x1)（棄却域）/ stat_mark(x0, label)
+    density(pdf) / tail(pdf, x0, x1)（棄却域）/ stat_mark(x0, label) / hline(y, label)（水平の参照線）
 * `CoefBarMob(box, names, values, se)`：回帰係数の推定値＋信頼区間のバー（実データの表を読む用）．
     star(name) / highlight(name)
 * 数値（具体例の assert 用）：ols, projection_matrix, annihilator_matrix, is_idempotent, is_symmetric,
@@ -25,7 +25,7 @@ from manim import (DL, DOWN, DR, LEFT, RIGHT, UL, UP, UR, Arrow, Axes, DashedLin
 
 from .. import voice as _voice
 from ..layout import Box
-from ..style import ACCENT, DIM, FG, MAIN, ORANGE_E, PURPLE_E, mt
+from ..style import ACCENT, DIM, FG, MAIN, ORANGE_E, PURPLE_E, mt, row
 from ..units import LiveGroup, mark_overlay
 
 __all__ = [
@@ -142,6 +142,7 @@ class ProjectionMob(LiveGroup):
             lbl = mt(label, size=28, color=color)
             lbl.add_updater(lambda m: m.next_to(a.get_end(), direction, buff=0.12))
             g.add(lbl)
+            a._qa_target = lbl    # 矢印の先はラベルのすぐそば（QAの「矢印の先に何もない」対策）
         if add:
             self.add(g)
         return mark_overlay(g)
@@ -244,6 +245,16 @@ class DistMob(LiveGroup):
             self.add(g)
         return mark_overlay(g)
 
+    def hline(self, y: float, color=DIM, label: str | None = None, add=True):
+        """水平の参照線（label は row() と同じ規則）．"""
+        L = DashedLine(self.p(self.xr[0], y), self.p(self.xr[1], y), color=color, stroke_width=2)
+        g = VGroup(L)
+        if label:
+            g.add(row(label, size=24, color=color).next_to(L, LEFT, buff=0.08))
+        if add:
+            self.add(g)
+        return mark_overlay(g)
+
     def tail(self, pdf, x0: float, x1: float, color=ORANGE_E, opacity=0.35, n=120, add=True):
         """棄却域：x0 から x1 の下の面積を塗る."""
         xs = np.linspace(x0, x1, n)
@@ -255,10 +266,11 @@ class DistMob(LiveGroup):
         return mark_overlay(poly)
 
     def stat_mark(self, x0: float, label: str | None = None, color=ACCENT, add=True):
+        """label は row() と同じ規則（日本語と混ぜてよい．数式は $...$ で囲む）."""
         L = DashedLine(self.p(x0, self.yr[0]), self.p(x0, self.yr[1]), color=color, stroke_width=2.5)
         g = VGroup(L)
         if label:
-            g.add(mt(label, size=26, color=color).next_to(L, UP, buff=0.08))
+            g.add(row(label, size=26, color=color).next_to(L, UP, buff=0.08))
         if add:
             self.add(g)
         return mark_overlay(g)
@@ -294,7 +306,7 @@ class CoefBarMob(LiveGroup):
         self._y_of = {}
         for i, (name, v, s) in enumerate(zip(names, values, se)):
             y = y_top - i * row_h
-            lbl = mt(name, size=24, color=FG).move_to([bl + label_w / 2, y, 0])
+            lbl = row(name, size=24, color=FG).move_to([bl + label_w / 2, y, 0])
             whisker = Line([xpos(v - z * s), y, 0], [xpos(v + z * s), y, 0], color=MAIN, stroke_width=3)
             dot = Dot([xpos(v), y, 0], radius=0.075, color=MAIN)
             g = VGroup(lbl, whisker, dot)
@@ -305,7 +317,7 @@ class CoefBarMob(LiveGroup):
 
     def star(self, name: str, text: str = "*", color=ACCENT, buff: float = 0.1, add=True):
         dot = self.rows[name][2]
-        s = mt(text, size=26, color=color).next_to(dot, UP, buff=buff)
+        s = row(text, size=26, color=color).next_to(dot, UP, buff=buff)
         if add:
             self.add(s)
         return mark_overlay(s)

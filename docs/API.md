@@ -146,7 +146,8 @@ Narfi（自然演繹の証明記述言語）風に証明をデータで書き，
   ような横並びの分割），`grid2x2(w1, w2, h1, h2, labels, colors=)`（2×2 の分割行列），
   `eq(*parts, box=)`（col_blocks/grid2x2 の結果と `"="`/`"+"` のような文字列を式として並べ box に収める）．
 - `DistMob(box, xr, yr, x_label=)`：検定統計量の分布のグラフ．`density(pdf)`，`tail(pdf, x0, x1)`（棄却域の塗り），
-  `stat_mark(x0, label=)`（検定統計量の実現値の縦線）．`normal_pdf/chi2_pdf/t_pdf/f_pdf` は対数空間で計算するので
+  `stat_mark(x0, label=)`（検定統計量の実現値の縦線），`hline(y, label=)`（水平の参照線）．いずれも label は
+  `row()` と同じ規則（日本語と混ぜてよい．数式は `$...$` で囲む）．`normal_pdf/chi2_pdf/t_pdf/f_pdf` は対数空間で計算するので
   自由度が大きくても（`math.gamma` のオーバーフローを起こさず）使える．
 - `CoefBarMob(box, names, values, se, z=1.96)`：回帰係数の推定値と信頼区間のバー（実データの回帰表を読む用）．
   0 の位置に破線．`star(name)`（有意性の印），`highlight(name, color=)`．
