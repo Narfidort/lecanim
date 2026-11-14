@@ -33,10 +33,10 @@ from .. import voice as _voice
 from ..style import BG, BLUE_E, CORNER, DIM, FG, GREEN_E, ORANGE_E, PURPLE_E, RED_E, YELLOW_E, jp, row
 from ..units import LiveGroup, mark_overlay
 
-__all__ = ["walk", "scope_bars", "parts", "Formula", "Exit", "Atom", "Forall", "Exists", "Imp", "And", "Or", "Not", "Bot", "Iff",
+__all__ = ["walk", "scope_bars", "parts", "Formula", "Exit", "Induction", "Atom", "Forall", "Exists", "Imp", "And", "Or", "Not", "Bot", "Iff",
            "Fix", "Assume", "Obtain", "Choose", "Have", "Let", "ByContra", "Contradiction", "Just", "Chain",
            "Cases", "Case", "Thm", "check", "Trace", "ProofMob", "ContextPanel", "KIND_COLOR", "mentions",
-           "subst", "as_formula"]
+           "subst", "as_formula", "proof_view", "prove"]
 
 YOMI = [("Narfi", "ナーフィ"), ("Fix", "フィックス"), ("Obtain", "オブテイン"), ("アシューム", "アシュウム"), ("assume", "アシュウム"),
         ("choose", "チューズ"), ("by_contra", "バイコントラ"), ("goal", "ゴール"), ("束縛", "そくばく"),
@@ -44,7 +44,7 @@ YOMI = [("Narfi", "ナーフィ"), ("Fix", "フィックス"), ("Obtain", "オ�
 _voice.register_words(YOMI)
 
 # 種類ごとの色：未定の対象（Fix / Obtain / Case）は大文字のキーワード（Narfi の命名規則 §10.2）
-KIND_COLOR = {"fix": BLUE_E, "obtain": ORANGE_E, "assume": GREEN_E, "have": FG, "let": PURPLE_E,
+KIND_COLOR = {"fix": BLUE_E, "obtain": ORANGE_E, "assume": GREEN_E, "have": FG, "left": YELLOW_E, "right": YELLOW_E, "induction": BLUE_E, "let": PURPLE_E,
               "contra": RED_E, "choose": YELLOW_E, "just": DIM, "case": BLUE_E, "param": DIM, "hyp": GREEN_E}
 KIND_TAG = {"fix": "任意", "obtain": "存在", "assume": "仮定", "have": "既知", "let": "定義", "contra": "仮定",
             "case": "場合", "param": "前提", "hyp": "仮定"}
@@ -389,6 +389,19 @@ class Cases(Step):
 
 
 @dataclass
+class Induction(Step):
+    """数学的帰納法：induction n の下に Case zero / Case succ k, IH : φ(k).
+    goal は φ(n)．zero では φ(0)，succ では IH : φ(k) を仮定して φ(k+1) を示す．"""
+    x: str = ""
+    zero: list = field(default_factory=list)
+    k: str = "k"
+    ih: str = "IH"
+    succ: list = field(default_factory=list)
+    note: str = ""
+    kind = "just"
+
+
+@dataclass
 class Exit(Step):
     """スコープを出た所（Narfi には書かない．何が示されたかを ∴ で表示するための行）."""
     concl: str = ""
@@ -615,7 +628,8 @@ class _Checker:
             if isinstance(s, Assume) and isinstance(goal, Imp):
                 a = goal.a.tex(False)
                 head = ((f"({a})" if isinstance(goal.a, (_Bin, _Q)) else a) + r" \Rightarrow", goal.b.tex(False))
-            i = self.emit(s, depth, [kw, f"${s.h} : {prop.tex()}$"], new, g0, inner, head=head)
+            shown = f"${s.h}$" if isinstance(s, ByContra) else f"${s.h} : {prop.tex()}$"     # by_contra h（中身は文脈に出る）
+            i = self.emit(s, depth, [kw, shown], new, g0, inner, head=head)
             rest = self.block(s.body, depth + 1, new, inner)
             self.lines[i].scope_end = len(self.lines) - 1
             if rest is not None:
@@ -634,6 +648,22 @@ class _Checker:
                 self.err(f"Case {s.pattern} の最後で goal が閉じていない")
             self.exit(depth, ctx, goal)
             return goal, ctx
+        if isinstance(s, Induction):
+            self.scope_check([s.x], ctx)
+            if goal is None:
+                self.err("induction：goal がない")
+                return None, ctx
+            self.emit(s, depth, ["induction", f"${s.x}$"], ctx, g0, goal)
+            phi = goal
+            base = phi.subst(s.x, "0")
+            self.step(Case("zero", [], body=s.zero), depth, ctx, base)
+            phi_k = phi.subst(s.x, s.k)
+            nxt = phi.subst(s.x, f"({s.k}+1)")
+            if isinstance(nxt, Atom):
+                nxt = Atom(re.sub(r"\(\((\w+\+1)\)\)", r"(\1)", nxt.s))
+            self.step(Case(f"succ ${s.k}$, ${s.ih} : {phi_k.tex()}$",
+                           [(s.k, "fix", None), (s.ih, "assume", phi_k)], body=s.succ), depth, ctx, nxt)
+            return None, ctx
         if isinstance(s, Cases):
             self.scope_check([s.on], ctx)
             self.emit(s, depth, ["cases", f"${s.on}$"], ctx, g0, goal)
@@ -667,7 +697,8 @@ class _Checker:
             if goal is not None and norm(s.x) in goal.names():
                 self.err(f"Obtain {s.x}：{s.x} が goal に現れている")
             call = s.src + (f"({', '.join(s.args)})" if s.args else "")
-            k = self.emit(s, depth, ["Obtain", f"${s.x}, {s.h}$", ":", f"${call}$"], new, g0, goal,
+            xs_ = f"{s.x}({', '.join(deps)})" if deps else s.x       # 依存の注釈 N(ε)（現行の書き方）
+            k = self.emit(s, depth, ["Obtain", f"${xs_}$", "|", f"${s.h}$", "by", f"${call}$"], new, g0, goal,
                           uses_in=[s.src, *s.args])
             self.lines[k].unpack = {"src": s.src, "stages": stages}
             return goal, new
@@ -692,7 +723,7 @@ class _Checker:
             if s.h:
                 self.fresh(s.h, new)
                 new.append(Entry(s.h, "have", prop.tex(), formula=prop))
-            txt = ["have", f"${s.h + ' : ' if s.h else ''}{prop.tex()}$"] + ([":=", s.by] if s.by else [])
+            txt = [f"${s.h + ' : ' if s.h else ''}{prop.tex()}$"] + (["by", s.by] if s.by else [])
             after = None if s.close else goal
             self.emit(s, depth, txt, new, g0, after, uses_in=[s.by])
             return after, new
@@ -721,7 +752,7 @@ class _Checker:
             self.scope_check([s.h1, s.h2], ctx)
             if not isinstance(goal, Bot):
                 self.err("contradiction：goal が ⊥ ではない（by_contra の中で使う）")
-            self.emit(s, depth, ["contradiction", f"${s.h1}\\ {s.h2}$"], ctx, g0, None, uses_in=[s.h1, s.h2])
+            self.emit(s, depth, [f"${s.h2}({s.h1})$"], ctx, g0, None, uses_in=[s.h1, s.h2])      # contradiction は k(h) に変わった
             return None, ctx
         if isinstance(s, Just):
             self.scope_check([s.by, *s.args], ctx)
@@ -791,8 +822,8 @@ def check(thm: Thm) -> Trace:
 
 # ================================================================ 描画
 _KW_COLOR = {"Fix": BLUE_E, "Obtain": ORANGE_E, "assume": GREEN_E, "by_contra": RED_E, "choose": YELLOW_E,
-             "have": FG, "let": PURPLE_E, "Case": BLUE_E, "cases": DIM, "contradiction": RED_E, "▸": DIM,
-             "by": DIM, ":=": DIM, ":": DIM}
+             "have": FG, "left": YELLOW_E, "right": YELLOW_E, "induction": BLUE_E, "let": PURPLE_E, "Case": BLUE_E, "cases": DIM, "contradiction": RED_E, "▸": DIM,
+             "by": DIM, ":=": DIM, ":": DIM, "|": DIM}
 
 
 class ProofMob(LiveGroup):
@@ -810,9 +841,11 @@ class ProofMob(LiveGroup):
     def __init__(self, trace: Trace, width: float = 7.4, size: float = 24, line_buff: float = 0.14,
                  indent: float = 0.42, top_left=(-6.8, 2.3), bottom: float = -2.62, title: bool = True,
                  max_height: float | None = None, faint_opacity: float = 0.2, fit: bool = False,
-                 minimap: bool = False, scope_style: str = "line"):
+                 minimap: bool = False, scope_style: str = "line", camera: bool = False, focus_rows: float = 9.0):
         super().__init__()
         self.trace = trace
+        self.camera = camera                 # True：全体を縮小して見せ，いまの行へズーム（スクロール・畳みは使わない）
+        self.zoom = 1.0
         self.indent = indent
         self.buff = line_buff
         self.faint_op = faint_opacity
@@ -823,7 +856,7 @@ class ProofMob(LiveGroup):
                 continue
             ps = []
             for k, p in enumerate(ln.text):
-                if isinstance(p, str) and p in _KW_COLOR and k == 0 or p in ("by", ":=", ":"):
+                if isinstance(p, str) and p in _KW_COLOR and k == 0 or p in ("by", ":=", ":", "|"):
                     ps.append(jp(p, size=size, color=_KW_COLOR[p], weight="BOLD" if k == 0 else "NORMAL"))
                 else:
                     ps.append(p)
@@ -872,9 +905,23 @@ class ProofMob(LiveGroup):
         self._shown: set[int] = set()
         self._dimmed = False
         self._cur = None
+        self._h0 = [r.height for r in self.rows]          # ズーム 1 のときの行の高さ
+        self._rz = [1.0] * len(self.rows)                 # 各行がいま持っているズーム
+        self._indent0 = self.indent
+        if camera:
+            tot = sum(h + self.buff for h in self._h0)
+            room = self.win_top - self.win_bot
+            self.z_over = min(1.0, room / tot) if tot > 0 else 1.0          # 全体が窓に収まる倍率（概観）
+            avg = tot / max(len(self._h0), 1)
+            self.z_focus = float(min(1.0, max(self.z_over, room / (focus_rows * avg))))   # いまの行まわりを読む倍率
+            self.zoom = self.z_over
         ys = self._ys()
         for i, r in enumerate(self.rows):
-            r.move_to([self.x0 + trace.lines[i].depth * indent, ys[i], 0], aligned_edge=UP + LEFT)
+            if camera and self.zoom != 1.0:
+                r.scale(self.zoom, about_point=r.get_corner(UP + LEFT))
+                self._rz[i] = self.zoom
+            r.move_to([self.x0 + trace.lines[i].depth * self.indent * (self.zoom if camera else 1), ys[i], 0],
+                      aligned_edge=UP + LEFT)
         self.boxes: dict[int, Rectangle] = {}
         for i, ln in enumerate(trace.lines):
             if ln.step.opens() and ln.scope_end >= i:
@@ -905,17 +952,21 @@ class ProofMob(LiveGroup):
                 out.append((i, self.folded[i]))
         return out
 
+    def _hh(self, i: int) -> float:
+        """i 行目の（いまのズームでの）高さ."""
+        return self._h0[i] * self.zoom
+
     def _ys(self) -> dict:
         """各行（と畳んだ印）の上端の y．畳まれて隠れた行は直前の位置."""
         ys, y = {}, self.win_top + self.offset
         last = y
         for i, mark in self._order():
-            m = mark if mark is not None else self.rows[i]
+            hm = (mark.height if mark is not None else self._hh(i))
             if mark is None:
                 ys[i] = y
             else:
                 ys[("fold", i)] = y
-            y -= m.height + self.buff
+            y -= hm + self.buff
             last = y
         for i in range(len(self.rows)):
             ys.setdefault(i, ys.get(i - 1, last) if i > 0 else last)
@@ -923,13 +974,13 @@ class ProofMob(LiveGroup):
         return ys
 
     def _total_h(self) -> float:
-        return sum(self.rows[i].height + self.buff for i in range(len(self.rows)) if i not in self.hidden)
+        return sum(self._hh(i) + self.buff for i in range(len(self.rows)) if i not in self.hidden)
 
     def _in_window(self, i, ys) -> bool:
         if i in getattr(self, "_pins", ()):
             return True
         top = ys[i]
-        bot = top - self.rows[i].height
+        bot = top - self._hh(i)
         return top <= getattr(self, "_eff_top", self.win_top) + 0.02 and bot >= self.win_bot - 0.02
 
     def _enclosing(self, i: int) -> list[int]:
@@ -944,12 +995,12 @@ class ProofMob(LiveGroup):
         """スクロール量を決め，窓の上に固定するスコープの見出し（sticky）を求めて ys を返す."""
         self._pins, self._eff_top = [], self.win_top
         for _ in range(4):
-            eff_top = self.win_top - sum(self.rows[j].height + self.buff for j in self._pins)
+            eff_top = self.win_top - sum(self._hh(j) + self.buff for j in self._pins)
             self._eff_top = eff_top
             ys = self._ys()
             if focus is not None:
                 row_top = ys[focus]
-                bot = row_top - self.rows[focus].height
+                bot = row_top - self._hh(focus)
                 margin = 0.9
                 if top:                       # 作業台を下に開くので，行を窓の上へ寄せる
                     self.offset = max(0.0, self.offset + eff_top - row_top)
@@ -970,7 +1021,7 @@ class ProofMob(LiveGroup):
         y = self.win_top
         for j in self._pins:
             ys[j] = y
-            y -= self.rows[j].height + self.buff
+            y -= self._hh(j) + self.buff
         self._eff_top = y
         return ys
 
@@ -982,9 +1033,9 @@ class ProofMob(LiveGroup):
             bot = ys[("fold", i)] - self.folded[i].height - 0.07
         else:
             e = ln.scope_end
-            bot = ys[e] - self.rows[e].height - 0.07
+            bot = ys[e] - self._hh(e) - 0.07
         top, bot = min(top, self.win_top + 0.07), max(bot, self.win_bot - 0.07)
-        left = self.x0 + ln.depth * self.indent - 0.12
+        left = self.x0 + ln.depth * self.indent * (self.zoom if self.camera else 1) - 0.12
         right = self.right + 0.12
         h = max(top - bot, 0.01)
         if self.scope_style == "line":          # スコープは左の細い縦線だけ（ミニマル）
@@ -1031,7 +1082,7 @@ class ProofMob(LiveGroup):
         ys = self._ys_pinned(focus, top)
         anims = []
         for i, r in enumerate(self.rows):
-            target_x = self.x0 + self.trace.lines[i].depth * self.indent
+            target_x = self.x0 + self.trace.lines[i].depth * self.indent * (self.zoom if self.camera else 1)
             dy = ys[i] - r.get_top()[1]
             if i in self.hidden or not self._in_window(i, ys):
                 op = 0.0
@@ -1040,7 +1091,12 @@ class ProofMob(LiveGroup):
             else:
                 op = self.faint_op
             cur_op = r.get_fill_opacity() if r.family_members_with_points() else 1
-            if abs(dy) > 1e-3 or abs(cur_op - op) > 1e-3:
+            ratio = self.zoom / self._rz[i] if self.camera else 1.0
+            if abs(ratio - 1) > 1e-4:                    # カメラ：倍率を変えながら新しい位置へ
+                self._rz[i] = self.zoom
+                anims.append(r.animate.scale(ratio, about_point=r.get_corner(UP + LEFT))
+                             .move_to([target_x, ys[i], 0], aligned_edge=UP + LEFT).set_opacity(op))
+            elif abs(dy) > 1e-3 or abs(cur_op - op) > 1e-3:
                 anims.append(r.animate.shift(UP * dy + RIGHT * (target_x - r.get_left()[0])).set_opacity(op))
         for j, mk in self.folded.items():
             mk.move_to([self.x0 + (self.trace.lines[j].depth + 1) * self.indent, ys[("fold", j)], 0],
@@ -1091,7 +1147,20 @@ class ProofMob(LiveGroup):
 
     def reveal(self, i: int, top: bool = False) -> list:
         self._shown.add(i)
+        if self.camera:                       # いまの行まわりを読める倍率へズーム（行が窓の外なら窓の中へ寄せる）
+            self.zoom = self.z_focus
         return self._relayout(focus=i, top=top)
+
+    def overview(self) -> list:
+        """カメラを引いて，証明の全体を見せる（カメラ方式のとき）."""
+        if not self.camera:
+            return self.unfold_all()
+        self.zoom = self.z_over
+        self.offset = 0.0
+        self._dimmed = False
+        self._cur = None
+        self._shown = set(range(len(self.rows)))
+        return self._relayout(focus=None)
 
     def reveal_all(self) -> list:
         return [FadeIn(self)]
@@ -1099,7 +1168,8 @@ class ProofMob(LiveGroup):
     def cursor(self, i: int) -> list:
         ys = getattr(self, "_ys_cache", None) or self._ys()
         x = self.x0 + self.trace.lines[i].depth * self.indent
-        p = np.array([x - 0.18, ys[i] - self.rows[i].height / 2, 0])
+        x = self.x0 + self.trace.lines[i].depth * self.indent * (self.zoom if self.camera else 1)
+        p = np.array([x - 0.18, ys[i] - self._hh(i) / 2, 0])
         self._cur = i
         if self.has_mm:
             y = self.win_top - (i + 0.5) * self._mm_step
@@ -1116,7 +1186,9 @@ class ProofMob(LiveGroup):
         return [self.arrow.animate.move_to(p), *dot_anim]
 
     def fold(self, j: int) -> list:
-        """スコープ j（開いた行）の中身を畳む．∴ 行はそのまま残る."""
+        """スコープ j（開いた行）の中身を畳む．∴ 行はそのまま残る（カメラ方式では畳まない）."""
+        if self.camera:
+            return []
         ln = self.trace.lines[j]
         if j in self.folded or ln.scope_end <= j:
             return []
@@ -1130,7 +1202,9 @@ class ProofMob(LiveGroup):
         return self._relayout(focus=None)
 
     def unfold_all(self) -> list:
-        """畳んだスコープをすべて開き，先頭までスクロールを戻す（最後に全体を見せる）."""
+        """畳んだスコープをすべて開き，先頭までスクロールを戻す（最後に全体を見せる）．カメラ方式なら引いて全体へ."""
+        if self.camera:
+            return self.overview()
         for mk in self.folded.values():
             self.remove(mk)
         fades = [FadeOut(mk) for mk in self.folded.values()]
@@ -1232,23 +1306,33 @@ class ContextPanel(LiveGroup):
                 anims.append(Indicate(m, color=color, scale_factor=1.08))
         return anims, VGroup()
 
-    def emphasize(self, names, color=YELLOW_E, scale: float = 1.3) -> list:
-        """根拠に使う事実を，その場で大きく・黄色にする（吹き出しを出さずに，中身を読めるように）. restore() で戻す."""
-        anims = []
+    def emphasize(self, names, color=YELLOW_E, scale: float = 1.15) -> list:
+        """根拠に使う事実を，その場で大きく・黄色にする（吹き出しを出さずに，中身を読めるように）. restore() で戻す.
+        大きくした分だけ，その下の項目を下へずらして重ならないようにする."""
         self._emph = getattr(self, "_emph", [])
-        for n in names:
-            m = self.entry_mob(n)
-            if m is None:
-                continue
-            self._emph.append((m, m.copy()))
-            m._qa_allow = True
-            for x in m.get_family():
-                x._qa_allow = True
-            tgt = m.copy()
-            tgt.scale(scale, about_edge=LEFT)
-            if len(tgt) > 1:
-                tgt[1].set_color(color)           # ラベル（任意・既知…）の色はそのまま，本文だけ黄色に
-            anims.append(Transform(m, tgt))
+        want = [m for m in (self.entry_mob(n) for n in names) if m is not None]
+        if not want:
+            return []
+        ids = {id(m) for m in want}
+        anims, acc = [], 0.0
+        for m in sorted(self.entries, key=lambda x: -x.get_y()):
+            if id(m) in ids:
+                self._emph.append((m, m.copy()))
+                m._qa_allow = True
+                for x in m.get_family():
+                    x._qa_allow = True
+                m.set_z_index(20)                    # 拡大した事実は，隣の行のラベルより手前に描く
+                tgt = m.copy()
+                dh = (scale - 1) * m.height
+                tgt.scale(scale, about_edge=LEFT)
+                tgt.shift(DOWN * (acc + dh / 2))      # 上端はそのまま，下へ伸ばす
+                if len(tgt) > 1:
+                    tgt[1].set_color(color)           # ラベル（任意・既知…）の色はそのまま，本文だけ黄色に
+                acc += dh
+                anims.append(Transform(m, tgt))
+            elif acc > 1e-6:
+                self._emph.append((m, m.copy()))
+                anims.append(m.animate.shift(DOWN * acc))
         return anims
 
     def restore(self) -> list:
@@ -1410,7 +1494,7 @@ class ContextPanel(LiveGroup):
 
 
 _FACT_KINDS = ("hyp", "have", "assume", "contra")
-BENCH_BG = "#1f2230"       # 事実の中身を展開して見る場所：背景を少しだけ明るく
+BENCH_BG = "#141C24"       # 事実の中身を展開して見る場所：背景を少しだけ明るく
 BENCH_FRAME = True         # 細い枠も引く
 _ORIGIN = {"fix": "Fix で仮定した", "obtain": "Obtain で取り出した", "have": "have で示した", "assume": "assume で仮定した",
            "contra": "by_contra で仮定した", "let": "let で定義した", "case": "Case で仮定した", "just": "", "exit": ""}
@@ -1431,7 +1515,7 @@ def _fact_callout(pm: ProofMob, cp: "ContextPanel", names: list[str], i: int, si
             body = e.short                       # 日本語まじりの短い表示
         else:
             body = f"${e.short or e.tex}$"
-        r = row(f"${e.name}$", "：", body, size=size, color=FG)
+        r = row(f"${e.name}$", ":", body, size=size, color=FG)
         r[0].set_color(YELLOW_E)
         tag = row(f"← {where}", size=size * 0.75, color=DIM)
         rows_.add(VGroup(r, tag).arrange(RIGHT, buff=0.25))
@@ -1467,7 +1551,7 @@ def _workbench(scene, pm: ProofMob, cp: "ContextPanel", ln, size: float = 34):
     h_b = min(max(top_y - bot_y, 2.3), 3.5)
     from manim import RoundedRectangle
     from ..style import LINE
-    bg = RoundedRectangle(corner_radius=0.08, width=r - l, height=h_b, fill_color=BENCH_BG, fill_opacity=1,
+    bg = RoundedRectangle(corner_radius=CORNER, width=r - l, height=h_b, fill_color=BENCH_BG, fill_opacity=1,
                           stroke_color=LINE, stroke_width=1.2 if BENCH_FRAME else 0)
     bg.move_to([(l + r) / 2, top_y - h_b / 2, 0])
     title = row(f"${src}$ の中身を展開する", size=20, color=DIM)
@@ -1653,6 +1737,9 @@ def walk(scene, pm: ProofMob, cp: "ContextPanel | None", i: int, text: str | Non
         if ln.step.kind == "obtain":
             src = F
     if _changes(ln):
+        rest = cp.restore()                  # 拡大した根拠を戻してから，新しい事実・goal へ（重ならないように）
+        if rest:
+            scene.play(*rest, run_time=0.4)
         scene.cue("state")
         anims = cp.state(i, source=src if ln.step.kind in ("fix", "assume", "contra", "obtain") else None)
         if src is not None and ln.step.kind != "obtain":
@@ -1687,3 +1774,23 @@ def scope_bars(tex, spans, buff: float = 0.14, gap: float = 0.16, size: float = 
             g.add(t)
         bars.add(g)
     return mark_overlay(bars)
+
+
+def proof_view(scene, tr: Trace, size: float = 24, width: float = 7.2, split: float = 0.95, camera: bool = False,
+               focus_rows: float = 9.0):
+    """証明（左）と文脈・goal のパネル（右）を出す．(pm, cp) を返す．camera=True なら全体を縮小して置き，
+    walk で読む行へズームする（スクロール・畳みなし）."""
+    pm = ProofMob(tr, width=width, top_left=(-6.8, 2.3), size=size, camera=camera, focus_rows=focus_rows)
+    cp = ContextPanel(tr, left=split, right=6.9, top=2.3, bottom=-2.6)
+    scene.play(*pm.show_head(), FadeIn(VGroup(cp.frame, cp.gamma_title, cp.sep, cp.goal_title)))
+    scene.add(pm.faint(), cp)
+    scene.play(*cp.initial())
+    return pm, cp
+
+
+def prove(scene, pm: ProofMob, cp: ContextPanel, notes: list, start: int = 0, overview: bool = True):
+    """notes[k] を字幕にして，証明の start+k 行目を順に実行する．最後まで来たら全体を見せる（カメラなら引く）."""
+    for k, t in enumerate(notes):
+        walk(scene, pm, cp, start + k, t)
+    if overview and start + len(notes) == len(pm.trace.lines) and (pm.camera or not pm.needs_scroll):
+        scene.play(*pm.unfold_all(), run_time=1.0)
