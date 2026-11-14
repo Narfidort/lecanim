@@ -134,6 +134,25 @@ Narfi（自然演繹の証明記述言語）風に証明をデータで書き，
   `scope_bars(MathTex, [(i, j, 色, ラベル)])`（量化子のスコープを式の下の帯で示す）
 - 色：Fix＝青（任意），Obtain＝橙（存在），assume＝緑（仮定），let＝紫（定義），choose＝黄
 
+## 数理統計・計量経済（`lecanim.domains.stats`）
+
+- `ScatterFitMob(box, xr, yr)`：2変数の散布図＋回帰直線＋残差（K=1 の最小二乗の直感）．
+  `scatter(xs, ys)`, `line(b0, b1)`, `residuals(xs, ys, b0, b1)`．（`points` は manim の予約属性と衝突するので `scatter`）
+- `ProjectionMob(box, foot=(fx, fy))`：最小二乗の幾何の模式図．平面＝列空間 col(X)，平面上の点が `foot`（Ŷ の位置），
+  真上に `lift` だけ上げた点が Y．`pO()/pfoot()/pY()` は現在位置を返す関数．`vec(frm, to, label=, direction=)` は
+  これらの関数を渡すと `foot` を動かしたときに自動で追従する矢印を作る．`right_angle()` は足にある直角の印（追従する）．
+  `set_foot(fx, fy)` で足を動かすアニメーションを返す（分割回帰・過剰定式化で Ŷ が変わる様子に使う）．
+- `BlockMatrixMob()`：行列・ベクトルを矩形として並べる．`col_blocks([(label, width, color), ...], h=)`（X=[X1|X2] の
+  ような横並びの分割），`grid2x2(w1, w2, h1, h2, labels, colors=)`（2×2 の分割行列），
+  `eq(*parts, box=)`（col_blocks/grid2x2 の結果と `"="`/`"+"` のような文字列を式として並べ box に収める）．
+- `DistMob(box, xr, yr, x_label=)`：検定統計量の分布のグラフ．`density(pdf)`，`tail(pdf, x0, x1)`（棄却域の塗り），
+  `stat_mark(x0, label=)`（検定統計量の実現値の縦線）．`normal_pdf/chi2_pdf/t_pdf/f_pdf` は対数空間で計算するので
+  自由度が大きくても（`math.gamma` のオーバーフローを起こさず）使える．
+- `CoefBarMob(box, names, values, se, z=1.96)`：回帰係数の推定値と信頼区間のバー（実データの回帰表を読む用）．
+  0 の位置に破線．`star(name)`（有意性の印），`highlight(name, color=)`．
+- 数値（具体例の assert 用）：`ols(X, Y)` → (β̂, ε̂)，`projection_matrix(X)`，`annihilator_matrix(X)`，
+  `is_idempotent(M)`，`is_symmetric(M)`，`gls(X, Y, Omega)`，`f_stat(X, Y, R, c)`．
+
 ## 複素平面・関数のグラフ（`lecanim.domains.complex`）
 
 - `PlaneMob(box, xr, yr, ticks=, grid=)`：複素平面．`p(z)`（複素数→画面座標），
