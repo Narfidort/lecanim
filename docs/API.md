@@ -18,7 +18,7 @@ class MyScene(LectureScene):
 | メソッド | 役割 | 台本のキー |
 |---|---|---|
 | `title_card(title, subtitle)` | 冒頭のタイトル | `title:` |
-| `phase(kind, title)` | 見出し切替．kind = motivation / definition / example / proof，実験の回は observe / question / experiment / result / claim（言えること） | `phase:<title>` |
+| `phase(kind, title)` | 見出し切替．kind は motivation / definition / example / proof / summary など（`PHASES` にある日本語ラベルになる）だが，これは数ある構成の1つ．登録のないキーはそのまま見出しの文字になるので，証明以外の動画は好きな文字列でよい | `phase:<title>` |
 | `note(text, block=True)` | 画面下の字幕．`block=False` で読み上げ中に次へ（後で `wait_voice()`） | `note:<text>` |
 | `define(sym, meaning, target=, math=True, short=)` | 記号・用語を指し示して記号メモへ．`short` はメモ用の短い説明 | `def:<sym>` |
 | `recall(sym)` | 記号メモの該当項目を光らせる | — |
@@ -33,12 +33,19 @@ class MyScene(LectureScene):
 | `agenda(items, current=, done=)` | 問いの一覧．`current=None` で全項目を順に並べ，`current=i` で i 番目を強調（ブロックの冒頭） | `agenda:`, `q:<項目>` |
 | `end_card(*points)` | まとめ（各項目を読み上げ，クレジット表示） | `summary:`, `end:<point>`, `outro:` |
 
-テーマ：`lecanim.toml` の `[style] theme`。`"classic"`（既定．丸い色付きチップ）／`"sharp"`（無彩色の地＋青・琥珀・赤・緑の4色，
-角を立てた見出し・吹き出し，左寄せのタイトル）。色の名前（`BLUE_E` など）はテーマごとに値が変わる。
-テーマの値：`ACCENT`（強調色），`CAPTION`（字幕の色），`LINE`（罫線），`CORNER`（角の丸み）。
+配色（既定は「深海」トーン．考え方は docs/STYLE.md §0）：地が `BG`（ほぼ黒）・`FG`（本文）・`DIM`（副次的な文字）・`LINE`（罫線），
+構造用が `MAIN`（見出し・枠など，彩度のある青），強調用が `ACCENT`（いま一番注目してほしい1点だけに使う，より明るい青）。
+角の丸みは `CORNER`（既定 0）。`lecanim.toml` の `[style]` で `bg`/`fg`/`dim`/`line`/`main`/`accent`/`corner`/`jp_font` を上書きできる。
+`BLUE_E`・`ORANGE_E`・`PURPLE_E`・`YELLOW_E` は「黒・白・青」の家族の中で濃淡を変えた凡例用の色（`YELLOW_E` は `ACCENT` と同じ）。
+`GREEN_E`（正しい・合格）・`RED_E`（誤り・警告）だけは例外として本物の緑・赤を残している。
+色分けに意味がある場合（Narfi の Fix/Obtain，グラフの彩色，複数系列のグラフなど）の凡例（`PALETTE`）にだけ使い，装飾には使わない。
 
 テキスト部品（`lecanim.style`）：`row("日本語 $x^2$ 混在", size=, color=, weight=)`，`lines(...)`，`theorem(title, *rows)`，
 `boxed(m, title)`，`jp`, `mt`。色：`FG, DIM, RED_E, BLUE_E, GREEN_E, YELLOW_E, PURPLE_E, ORANGE_E, ECOL`。
+`row()` は `$...$` で囲まなくても，地の文に混ざる裸の変数（英字1文字，ギリシャ文字1文字，`a_n`・`x_1` のような
+1文字の下付き）を自動で数式として組む（`_SYMBOL_TEX`／`_VAR_RE`，検証済みの小さい記号表だけが対象）。
+前後が英数字の単語の内側では働かない（`Fix`・`QA` のような英単語はそのまま）ので，$ を書き忘れても崩れない。
+英単語をあえて数式にしたくない所（まれ）は `row()` でなく `jp()` を直接使う。
 
 ## 配置（`lecanim.layout`，コア）
 
@@ -171,3 +178,17 @@ anim/
 - `\xLeftrightarrow` は使えない（`\overset{..}{\Longleftrightarrow}`）。`MathTex` に日本語を入れない。
 - Python 文字列で `\t`（`\times`, `\to`）がタブにならないよう raw string か `\\`。
 - 並列レンダリングは 3 程度まで（Pango のキャッシュ競合）。
+
+## 追加（2026-10）：Narfi の現行仕様・本物の検査器・カメラ方式
+
+- **表示を現行の書き方に**：`Obtain x(依存) | h by src(args)`，`h : φ by j`（`have` は出さない），`by_contra h`，`k(h)`（`contradiction` は消えた），
+  `Induction(x, zero=[…], k=, ih=, succ=[…])`（`induction n` の下に `Case zero` / `Case succ k, IH : φ(k)`）．
+- **本物の Narfi で検査した証明を取り込む**：`lecanim.domains.narfi_src.load_narfi("file.narfi")` → `{定理名: Trace}`．
+  `narfi web --no-open` を起動して `/api/check` を呼ぶ（各行の文脈・goal が TeX つきで返る）．`narfi` は
+  `cargo install --path narfi`（https://github.com/Narfidort/Narfi），または環境変数 `NARFI_BIN`．古い書き方は `narfi migrate --write`．
+  Trace は ProofMob / ContextPanel / walk でそのまま使える（Narfi の核が検算した証明を見せられる）．
+- **カメラ方式**：`proof_view(scene, tr, camera=True)`．証明の全体を縮小して置き，`walk` が読む行へズームする（スクロール・畳み・ミニマップなし）．
+  `pm.overview()` で引く．`focus_rows` で「いまの行まわり何行を読める大きさにするか」．
+- `proof_view` / `prove` はライブラリの関数になった（以前は各プロジェクトに写していた）．
+- `define()` の区切りは「：」でなく「—」（`:` は Narfi の記法で紛れるため）．
+- 根拠の事実の拡大（`emphasize`）は，下の項目を押し下げて重ならない．新しい事実が入る前に元の大きさへ戻す．

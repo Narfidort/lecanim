@@ -3,7 +3,7 @@
 指紋の材料（どれが変わっても作り直す）：
   * シーンのクラスのソース／ファイルの共通部分（クラス以外の部分）
   * そのシーンの台本を読み上げ用に変換した文（読みの辞書の変更も反映される）
-  * 話者・話速・フォント・テーマ・品質・音声の有無
+  * 話者・話速・配色・フォント・品質・音声の有無
   * lecanim 本体のうち描画・音声に関わるソース（cli・qa・yomi・data は除く）
 `lecanim render --force` で無視できる．保存先は <プロジェクト>/.lecanim/render_cache.json.
 """
@@ -62,7 +62,7 @@ def scene_key(r: Path, f: Path, scene: str, q: str, voice: bool) -> str:
     spoken = [[k, v.yomi(t)] for k, t in SCRIPTS.get(scene, [])]
     material = {"pre": pre, "cls": cls.get(scene, ""), "spoken": spoken, "q": q, "voice": voice,
                 "speaker": cfg["voice"]["speaker"], "speed": cfg["voice"]["speed"],
-                "font": cfg["style"].get("jp_font", ""), "theme": cfg["style"].get("theme", ""),
+                "style": cfg["style"],
                 "render": {k: cfg["render"].get(k) for k in ("encoder", "vfr_still")},
                 "framework": framework_hash()}
     return hashlib.sha1(json.dumps(material, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:20]

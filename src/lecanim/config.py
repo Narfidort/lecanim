@@ -20,8 +20,14 @@ DEFAULTS = {
     "render": {"jobs": 3, "min_free_gb": 2.0, "mem_per_job_gb": 4.0, "encoder": "auto", "vfr_still": True},
     # 日本語フォント．空なら macOS は Hiragino Sans，それ以外は Noto Sans CJK JP．
     # ローカルとリモートで同じ見た目にしたいときは両方にあるフォント（Noto Sans CJK JP）を指定する
-    # theme: "classic"（丸い色付きチップ）/ "sharp"（無彩色＋4色・角を立てた見出し）
-    "style": {"jp_font": "", "theme": "classic"},
+    # 配色（既定は「深海」トーン）．bg/fg/dim/line が地，main が見出し・枠などの構造用，
+    # accent が「いま一番注目してほしい1点」だけに使う強調色．角の丸みは corner（既定 0 ＝ 角を立てる）．
+    # プロジェクトごとに上書きできる（他の値は既定のままでよい）．docs/STYLE.md §0．
+    "style": {
+        "jp_font": "",
+        "bg": "#05070A", "fg": "#E7ECEF", "dim": "#4C5B66", "line": "#131920",
+        "main": "#2E7FBF", "accent": "#6FD1FF", "corner": 0.0,
+    },
     # リモートレンダリング（lecanim render --remote）
     "remote": {"host": "", "root": "~/lecanim-remote", "jobs": 8},
     "youtube": {"footer": ""},
