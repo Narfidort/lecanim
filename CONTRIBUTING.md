@@ -5,7 +5,7 @@ lecanim は「コア」と「分野モジュール」に分かれている。新
 
 ```
 src/lecanim/
-  style.py, layout.py, units.py, scene.py, voice.py, narration.py, cli.py   ← コア（分野によらない）
+  style.py, layout.py, units.py, plot.py, scene.py, voice.py, narration.py, cli.py   ← コア（分野によらない）
   domains/
     graph.py        グラフ理論（Graph, EdgeColoring, GraphMob, …）
     _template.py    新しい分野の雛形（数直線の最小例）
@@ -13,6 +13,10 @@ examples/<分野>/    お手本シーン＋台本
 ```
 
 シーンでは `from lecanim import *` でコアを，`from lecanim.domains.<分野> import *` で分野の部品を読み込む。
+
+`plot.py` の `AxesMob` は，座標軸（軸・目盛り・ラベル）＋その上の部品（curve/area/hline/vline/dots）という
+分野によらない土台．座標軸を使うグラフ（解析の `PlotMob`，統計の `DistMob`・`ScatterFitMob`）はこれを継承し，
+分野の言葉の操作（ε の帯，棄却域，残差，…）だけを足す。軸の建て方そのものを分野モジュールで再実装しない。
 
 ## 分野モジュールの約束
 
@@ -26,6 +30,9 @@ examples/<分野>/    お手本シーン＋台本
 5. **読み辞書**：分野の用語・人名で VOICEVOX が誤読するものは `YOMI` に入れて `voice.register_words(YOMI, SUSPECT)`。
    誤読は `transcripts/<Scene>.txt` のカナ（⤷ の行）で見つける。
 6. **`__all__` を定義する**：star import での名前衝突を防ぐ（manim の `Graph` とぶつかって壊れた前例がある）。
+7. **ラベルは `mt()` 直書きではなく `style.label()` に通す**：日本語・`$...$` 混在文字列を渡すと自動で `row()` に，
+   純粋な LaTeX（`r"\hat Y"` など）は `mt()` に振り分けられる。`mt()` に日本語を渡すと LaTeX コンパイルが
+   Unicode エラーで落ちる（前例：`CoefBarMob` の名前，`stat_mark`／`hline` のラベル）。
 
 ## PR に含めるもの
 

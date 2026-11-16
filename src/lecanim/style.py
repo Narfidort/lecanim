@@ -127,6 +127,18 @@ def row(*parts, size: float = 28, color=FG, buff=0.08, weight=NORMAL) -> VGroup:
     return g
 
 
+_CJK_RE = _re.compile(r"[　-ヿ㐀-鿿＀-￯]")
+
+
+def label(s: str, size: float = 28, color=FG) -> Mobject:
+    """図に添える短いラベル．純粋な LaTeX（r"\\hat Y"，"X_1"）は数式として，
+    日本語や $...$ を含むもの（"実現値"，"自由度 $k$"）は row() として組む．
+    分野の部品はラベルを必ずこれに通す（MathTex に日本語を渡して LaTeX が落ちる事故を防ぐ）．"""
+    if "$" in s or _CJK_RE.search(s):
+        return row(s, size=size, color=color)
+    return mt(s, size=size, color=color)
+
+
 def lines(*rows_, buff=0.22, aligned=LEFT) -> VGroup:
     """row()/jp() の縦並び. 文字列は row() に通す."""
     ms = []

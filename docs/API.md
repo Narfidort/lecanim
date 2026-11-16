@@ -47,6 +47,12 @@ class MyScene(LectureScene):
 前後が英数字の単語の内側では働かない（`Fix`・`QA` のような英単語はそのまま）ので，$ を書き忘れても崩れない。
 英単語をあえて数式にしたくない所（まれ）は `row()` でなく `jp()` を直接使う。
 
+`label(s, size=, color=)` は，分野モジュールが「呼び出し側から受け取った1つのラベル文字列」を組むときに使う
+小さな振り分け関数：`s` に `$` か日本語（CJK）が含まれていれば `row()` に，それ以外（純粋な LaTeX，例えば
+`r"\hat Y"` や `"X_1"`）ならそのまま `mt()` に渡す。分野の部品（`ProjectionMob.vec`，`CoefBarMob` の名前，
+`DistMob.stat_mark` など）のラベル引数は，これを通すと日本語・数式のどちらを渡しても安全に組まれる
+（`mt()` に直接日本語を渡すと LaTeX が Unicode エラーで落ちる：docs の「はまりどころ」参照）。
+
 ## 配置（`lecanim.layout`，コア）
 
 `Box.left(frac)/right(frac)/full()/from_lrbt(l, r, b, t)`，`fit(pos, box, margin=)`，
@@ -56,6 +62,20 @@ class MyScene(LectureScene):
 
 `LiveGroup`（分野の描画クラスの基底．部品ごとにアニメしても play 後に1つのまとまりに戻る），
 `mark_overlay(m)`（自動レイアウト検査の対象外にする）。
+
+## 座標軸（`lecanim.plot`，コア）
+
+`AxesMob(box, xr, yr, x_label=, y_label=, numbers="xy")`：座標軸（軸・目盛りの数字・軸ラベル）と，その上に
+描く部品．座標軸を使うグラフ（解析の `PlotMob`，統計の `DistMob`・`ScatterFitMob`）はこれを継承し，軸の建て方
+そのものは再実装しない（分野の言葉の操作だけを足す）。
+
+- `p(x, y)`（グラフ座標→画面座標），`xr`/`yr`（そのまま保持）
+- `curve(f, color=, x0=, x1=, width=, n=, add=)`：y=f(x) のグラフ
+- `area(f, x0, x1, color=, opacity=, add=)`：f(x) と x 軸のあいだを塗る
+- `hline(y, color=, label=, add=)` / `vline(x, color=, label=, label_dir=, add=)`：破線の参照線（`label` は
+  `style.label()` と同じ規則）
+- `dots(pts, color=, radius=, add=)`：点の集まり
+- どの部品も軸に入り（`add=False` なら返すだけ），自動レイアウト検査の対象外（`mark_overlay`）
 
 ## グラフ（`lecanim.domains.graph`）
 
@@ -136,21 +156,23 @@ Narfi（自然演繹の証明記述言語）風に証明をデータで書き，
 
 ## 数理統計・計量経済（`lecanim.domains.stats`）
 
-- `ScatterFitMob(box, xr, yr)`：2変数の散布図＋回帰直線＋残差（K=1 の最小二乗の直感）．
+- `ScatterFitMob(box, xr, yr)`：`AxesMob` を継承．2変数の散布図＋回帰直線＋残差（K=1 の最小二乗の直感）．
   `scatter(xs, ys)`, `line(b0, b1)`, `residuals(xs, ys, b0, b1)`．（`points` は manim の予約属性と衝突するので `scatter`）
 - `ProjectionMob(box, foot=(fx, fy))`：最小二乗の幾何の模式図．平面＝列空間 col(X)，平面上の点が `foot`（Ŷ の位置），
   真上に `lift` だけ上げた点が Y．`pO()/pfoot()/pY()` は現在位置を返す関数．`vec(frm, to, label=, direction=)` は
-  これらの関数を渡すと `foot` を動かしたときに自動で追従する矢印を作る．`right_angle()` は足にある直角の印（追従する）．
+  これらの関数を渡すと `foot` を動かしたときに自動で追従する矢印を作る（`label` は `style.label()` の規則）．
+  `right_angle()` は足にある直角の印（追従する）．
   `set_foot(fx, fy)` で足を動かすアニメーションを返す（分割回帰・過剰定式化で Ŷ が変わる様子に使う）．
 - `BlockMatrixMob()`：行列・ベクトルを矩形として並べる．`col_blocks([(label, width, color), ...], h=)`（X=[X1|X2] の
   ような横並びの分割），`grid2x2(w1, w2, h1, h2, labels, colors=)`（2×2 の分割行列），
   `eq(*parts, box=)`（col_blocks/grid2x2 の結果と `"="`/`"+"` のような文字列を式として並べ box に収める）．
-- `DistMob(box, xr, yr, x_label=)`：検定統計量の分布のグラフ．`density(pdf)`，`tail(pdf, x0, x1)`（棄却域の塗り），
-  `stat_mark(x0, label=)`（検定統計量の実現値の縦線），`hline(y, label=)`（水平の参照線）．いずれも label は
-  `row()` と同じ規則（日本語と混ぜてよい．数式は `$...$` で囲む）．`normal_pdf/chi2_pdf/t_pdf/f_pdf` は対数空間で計算するので
-  自由度が大きくても（`math.gamma` のオーバーフローを起こさず）使える．
+  いずれの `label` も `style.label()` の規則．
+- `DistMob(box, xr, yr, x_label=)`：`AxesMob` を継承．検定統計量の分布のグラフ．`density(pdf)`（`curve` の薄いラッパ），
+  `tail(pdf, x0, x1)`（棄却域の塗り，`area` のラッパ），`stat_mark(x0, label=)`（検定統計量の実現値の縦線，`vline`
+  のラッパ），`hline(y, label=)` は `AxesMob` からそのまま．`normal_pdf/chi2_pdf/t_pdf/f_pdf` は対数空間で計算する
+  ので自由度が大きくても（`math.gamma` のオーバーフローを起こさず）使える．
 - `CoefBarMob(box, names, values, se, z=1.96)`：回帰係数の推定値と信頼区間のバー（実データの回帰表を読む用）．
-  0 の位置に破線．`star(name)`（有意性の印），`highlight(name, color=)`．
+  0 の位置に破線．`star(name)`（有意性の印），`highlight(name, color=)`．`names` は `style.label()` の規則。
 - 数値（具体例の assert 用）：`ols(X, Y)` → (β̂, ε̂)，`projection_matrix(X)`，`annihilator_matrix(X)`，
   `is_idempotent(M)`，`is_symmetric(M)`，`gls(X, Y, Omega)`，`f_stat(X, Y, R, c)`．
 
@@ -160,7 +182,8 @@ Narfi（自然演繹の証明記述言語）風に証明をデータで書き，
   `dot(z, label)`, `vec(z)`, `seg(z1, z2)`, `disk(c, r, closed=)`（開円板は点線），`ring`, `curve(f, t0, t1)`,
   `polyline`, `seq(zs)`, `square(c, side)`, `polar(z)`（r と θ の印），`region(pred)`（条件をみたす点を塗る）．
   部品は平面に入り，平面を動かすと一緒に動く（`add=False` なら返すだけ．どちらも重なり検査の対象外）
-- `PlotMob(box, xr=(lo, hi, step), yr=…)`：実関数のグラフ．`graph(f)`, `band(f, eps)`（ε の帯），`hline`, `vline`, `dots(pts)`
+- `PlotMob(box, xr=(lo, hi, step), yr=…)`：`AxesMob` を継承．実関数のグラフ．`graph(f)`（`curve` のラッパ），
+  `band(f, eps)`（ε の帯），`hband(y, eps)`，`vline`/`dots` は既定の色だけ変えた薄いラッパ，`hline` は `AxesMob` からそのまま
 - 数値検証：`radius_cauchy_hadamard(coef)`, `partial_sums(term, n)`, `sup_dist(f, g, xs)`
 - 読み辞書：複素・正則・共役・偏角・整級数・一様収束・Cauchy・Weierstrass…
 
@@ -195,7 +218,9 @@ anim/
 
 - `Mobject` の属性名（`dim` など）とメソッド名を衝突させない。
 - 曲線の辺は `set_color` すると塗りが付く → `edge_style()` を使う。
-- `\xLeftrightarrow` は使えない（`\overset{..}{\Longleftrightarrow}`）。`MathTex` に日本語を入れない。
+- `\xLeftrightarrow` は使えない（`\overset{..}{\Longleftrightarrow}`）。`MathTex`（`mt()`）に日本語を直接渡すと
+  LaTeX が Unicode エラーで落ちる。呼び出し側のラベル文字列を組む分野の部品は `mt()` 直書きではなく `style.label()`
+  に通すこと（日本語でも純粋な LaTeX でも安全に振り分けられる）。
 - Python 文字列で `\t`（`\times`, `\to`）がタブにならないよう raw string か `\\`。
 - 並列レンダリングは 3 程度まで（Pango のキャッシュ競合）。
 

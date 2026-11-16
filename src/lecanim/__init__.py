@@ -14,6 +14,7 @@ from .style import *  # noqa: F401,F403,E402
 from .layout import *  # noqa: F401,F403,E402
 from .layout import Box, fit, layout_bipartite, layout_circle, layout_groups, layout_line  # noqa: F401,E402
 from .units import LiveGroup, mark_overlay  # noqa: F401,E402
+from .plot import *  # noqa: F401,F403,E402
 from .scene import *  # noqa: F401,F403,E402
 from .scene import VOICE_ON, LectureScene  # noqa: F401,E402
 

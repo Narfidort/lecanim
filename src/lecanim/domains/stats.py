@@ -20,12 +20,13 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from manim import (DL, DOWN, DR, LEFT, RIGHT, UL, UP, UR, Arrow, Axes, DashedLine, DashedVMobject, Dot, Line,
-                   Polygon, Rectangle, VGroup)
+from manim import DOWN, RIGHT, UP, UR, Arrow, DashedLine, Dot, Line, Polygon, Rectangle, VGroup
 
 from .. import voice as _voice
 from ..layout import Box
-from ..style import ACCENT, DIM, FG, MAIN, ORANGE_E, PURPLE_E, mt, row
+from ..plot import AxesMob
+from ..style import ACCENT, DIM, FG, MAIN, ORANGE_E, mt
+from ..style import label as _label
 from ..units import LiveGroup, mark_overlay
 
 __all__ = [
@@ -54,25 +55,11 @@ _voice.register_words(YOMI)
 
 
 # ============================================================ 散布図＋回帰直線
-class ScatterFitMob(LiveGroup):
-    """2変数の散布図＋回帰直線＋残差（K=1 の最小二乗の直感）."""
+class ScatterFitMob(AxesMob):
+    """2変数の散布図＋回帰直線＋残差（K=1 の最小二乗の直感）．軸自体は AxesMob（コア）が作る．"""
 
     def __init__(self, box: Box | None = None, xr=(0, 1, 0.5), yr=(0, 1, 0.5), x_label="x", y_label="y"):
-        super().__init__()
-        box = box or Box.full()
-        bl, br, bb, bt = box.lrbt
-        self.ax = Axes(x_range=list(xr), y_range=list(yr), x_length=br - bl, y_length=bt - bb,
-                       tips=False, axis_config={"color": DIM, "stroke_width": 2, "include_numbers": False})
-        self.ax.move_to([(bl + br) / 2, (bb + bt) / 2, 0])
-        self.add(self.ax)
-        if x_label:
-            self.add(mt(x_label, size=24, color=DIM).next_to(self.ax.x_axis.get_end(), DR, buff=0.08))
-        if y_label:
-            self.add(mt(y_label, size=24, color=DIM).next_to(self.ax.y_axis.get_end(), UL, buff=0.08))
-        self.xr, self.yr = xr, yr
-
-    def p(self, x, y) -> np.ndarray:
-        return self.ax.c2p(x, y)
+        super().__init__(box, xr, yr, x_label=x_label, y_label=y_label, numbers="")
 
     def scatter(self, xs, ys, color=FG, radius=0.06, add=True):
         g = VGroup(*[Dot(self.p(x, y), radius=radius, color=color) for x, y in zip(xs, ys)])
@@ -139,7 +126,7 @@ class ProjectionMob(LiveGroup):
         a.add_updater(lambda m: m.put_start_and_end_on(frm(), to()))
         g = VGroup(a)
         if label:
-            lbl = mt(label, size=28, color=color)
+            lbl = _label(label, size=28, color=color)
             lbl.add_updater(lambda m: m.next_to(a.get_end(), direction, buff=0.12))
             g.add(lbl)
             a._qa_target = lbl    # 矢印の先はラベルのすぐそば（QAの「矢印の先に何もない」対策）
@@ -172,9 +159,9 @@ class BlockMatrixMob(LiveGroup):
     def col_blocks(self, specs, h: float = 2.2, gap: float = 0.0):
         """specs = [(label, width, color), ...] を横に並べた1つの行列として描く（境界に細い線）."""
         g = VGroup()
-        for label, w, color in specs:
+        for lab, w, color in specs:
             r = Rectangle(width=w, height=h, color=color, stroke_width=2, fill_color=color, fill_opacity=0.08)
-            lbl = mt(label, size=28, color=FG)
+            lbl = _label(lab, size=28, color=FG)
             g.add(VGroup(r, lbl))
         g.arrange(RIGHT, buff=gap)
         for cell in g:
@@ -187,9 +174,9 @@ class BlockMatrixMob(LiveGroup):
         colors = colors or [MAIN] * 4
         specs = [(w1, h1), (w2, h1), (w1, h2), (w2, h2)]
         cells = []
-        for (w, h), label, color in zip(specs, labels, colors):
+        for (w, h), lab, color in zip(specs, labels, colors):
             r = Rectangle(width=w, height=h, color=color, stroke_width=2, fill_color=color, fill_opacity=0.08)
-            lbl = mt(label, size=26, color=FG).move_to(r)
+            lbl = _label(lab, size=26, color=FG).move_to(r)
             cells.append(VGroup(r, lbl))
         top = VGroup(cells[0], cells[1]).arrange(RIGHT, buff=0)
         bot = VGroup(cells[2], cells[3]).arrange(RIGHT, buff=0)
@@ -201,7 +188,7 @@ class BlockMatrixMob(LiveGroup):
         """parts：col_blocks/grid2x2 が返した VGroup か，"=","+" のような演算子の文字列．
         1つの式として横に並べ，box に収める."""
         box = box or Box.full()
-        items = [p if not isinstance(p, str) else mt(p, size=op_size, color=DIM) for p in parts]
+        items = [p if not isinstance(p, str) else _label(p, size=op_size, color=DIM) for p in parts]
         g = VGroup(*items).arrange(RIGHT, buff=buff)
         if g.width > box.width:
             g.scale_to_fit_width(box.width)
@@ -213,71 +200,22 @@ class BlockMatrixMob(LiveGroup):
 
 
 # ============================================================ 分布・棄却域
-class DistMob(LiveGroup):
-    """検定統計量の分布（正規・χ²・F・t）と棄却域．"""
+class DistMob(AxesMob):
+    """検定統計量の分布（正規・χ²・F・t）と棄却域．軸自体は AxesMob（コア）が作る．"""
 
     def __init__(self, box: Box | None = None, xr=(-4, 4, 1), yr=(0, 0.5, 0.1), x_label="z"):
-        super().__init__()
-        box = box or Box.full()
-        bl, br, bb, bt = box.lrbt
-        self.ax = Axes(x_range=list(xr), y_range=list(yr), x_length=br - bl, y_length=bt - bb,
-                       tips=False, axis_config={"color": DIM, "stroke_width": 2, "include_numbers": False})
-        self.ax.move_to([(bl + br) / 2, (bb + bt) / 2, 0])
-        self.add(self.ax)
-        nums = VGroup()
-        for v in np.arange(xr[0], xr[1] + 1e-9, xr[2]):
-            if abs(v) > 1e-9:
-                nums.add(mt(_num(v), size=20, color=DIM).next_to(self.ax.c2p(v, yr[0]), DOWN, buff=0.1))
-        self.add(nums)
-        if x_label:
-            self.add(mt(x_label, size=24, color=DIM).next_to(self.ax.x_axis.get_end(), DR, buff=0.08))
-        self.xr, self.yr = xr, yr
-
-    def p(self, x, y) -> np.ndarray:
-        return self.ax.c2p(x, y)
+        super().__init__(box, xr, yr, x_label=x_label, y_label=None, numbers="x")
 
     def density(self, pdf, color=MAIN, x0=None, x1=None, width=3.5, n=240, add=True):
-        x0 = self.xr[0] if x0 is None else x0
-        x1 = self.xr[1] if x1 is None else x1
-        g = self.ax.plot(pdf, x_range=[x0, x1, (x1 - x0) / n], color=color, stroke_width=width,
-                         use_smoothing=False)
-        if add:
-            self.add(g)
-        return mark_overlay(g)
-
-    def hline(self, y: float, color=DIM, label: str | None = None, add=True):
-        """水平の参照線（label は row() と同じ規則）．"""
-        L = DashedLine(self.p(self.xr[0], y), self.p(self.xr[1], y), color=color, stroke_width=2)
-        g = VGroup(L)
-        if label:
-            g.add(row(label, size=24, color=color).next_to(L, LEFT, buff=0.08))
-        if add:
-            self.add(g)
-        return mark_overlay(g)
+        return self.curve(pdf, color=color, x0=x0, x1=x1, width=width, n=n, add=add)
 
     def tail(self, pdf, x0: float, x1: float, color=ORANGE_E, opacity=0.35, n=120, add=True):
         """棄却域：x0 から x1 の下の面積を塗る."""
-        xs = np.linspace(x0, x1, n)
-        top = [self.p(x, pdf(x)) for x in xs]
-        bot = [self.p(x, 0) for x in reversed(xs)]
-        poly = Polygon(*top, *bot, stroke_width=0, fill_color=color, fill_opacity=opacity)
-        if add:
-            self.add(poly)
-        return mark_overlay(poly)
+        return self.area(pdf, x0, x1, color=color, opacity=opacity, n=n, add=add)
 
     def stat_mark(self, x0: float, label: str | None = None, color=ACCENT, add=True):
-        """label は row() と同じ規則（日本語と混ぜてよい．数式は $...$ で囲む）."""
-        L = DashedLine(self.p(x0, self.yr[0]), self.p(x0, self.yr[1]), color=color, stroke_width=2.5)
-        g = VGroup(L)
-        if label:
-            g.add(row(label, size=26, color=color).next_to(L, UP, buff=0.08))
-        if add:
-            self.add(g)
-        return mark_overlay(g)
-
-
-def _num(v: float) -> str:
-    return str(int(v)) if float(v).is_integer() else f"{v:g}"
+        """検定統計量の実現値の縦線．label は style.label() と同じ規則（日本語と混ぜてよい．数式は $...$ で囲む）."""
+        return self.vline(x0, color=color, label=label, label_dir=UP, size=26, width=2.5, add=add)
 
 
 # ============================================================ 係数の推定値と信頼区間
@@ -306,7 +244,7 @@ class CoefBarMob(LiveGroup):
         self._y_of = {}
         for i, (name, v, s) in enumerate(zip(names, values, se)):
             y = y_top - i * row_h
-            lbl = row(name, size=24, color=FG).move_to([bl + label_w / 2, y, 0])
+            lbl = _label(name, size=24, color=FG).move_to([bl + label_w / 2, y, 0])
             whisker = Line([xpos(v - z * s), y, 0], [xpos(v + z * s), y, 0], color=MAIN, stroke_width=3)
             dot = Dot([xpos(v), y, 0], radius=0.075, color=MAIN)
             g = VGroup(lbl, whisker, dot)
@@ -317,7 +255,7 @@ class CoefBarMob(LiveGroup):
 
     def star(self, name: str, text: str = "*", color=ACCENT, buff: float = 0.1, add=True):
         dot = self.rows[name][2]
-        s = row(text, size=26, color=color).next_to(dot, UP, buff=buff)
+        s = _label(text, size=26, color=color).next_to(dot, UP, buff=buff)
         if add:
             self.add(s)
         return mark_overlay(s)

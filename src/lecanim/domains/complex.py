@@ -15,12 +15,13 @@ import cmath
 import math
 
 import numpy as np
-from manim import (DL, DOWN, DR, LEFT, RIGHT, UL, UP, UR, Arc, Arrow, Axes, Circle, DashedLine, DashedVMobject, Dot, FadeIn,
+from manim import (DL, DOWN, LEFT, RIGHT, UP, UR, Arc, Arrow, Circle, DashedLine, DashedVMobject, Dot,
                    Line, Polygon, Rectangle, Square, VGroup, VMobject)
 
 from .. import voice as _voice
 from ..layout import Box
-from ..style import BG, BLUE_E, DIM, FG, GREEN_E, ORANGE_E, PURPLE_E, RED_E, YELLOW_E, mt, row
+from ..plot import AxesMob
+from ..style import BLUE_E, DIM, FG, GREEN_E, ORANGE_E, YELLOW_E, mt
 from ..units import LiveGroup, mark_overlay
 
 __all__ = ["PlaneMob", "PlotMob", "radius_cauchy_hadamard", "partial_sums", "sup_dist"]
@@ -244,44 +245,16 @@ def _num(v: float) -> str:
 
 
 
-class PlotMob(LiveGroup):
-    """実関数のグラフ（解析学の基礎：数列の収束・関数列の一様収束）."""
+class PlotMob(AxesMob):
+    """実関数のグラフ（解析学の基礎：数列の収束・関数列の一様収束）．軸自体は AxesMob（コア）が作る．"""
 
     def __init__(self, box: Box | None = None, xr=(0, 1, 0.5), yr=(0, 1, 0.5), x_label="x", y_label="y",
                  tips=False, numbers=True):
-        super().__init__()
-        box = box or Box.full()
-        bl, br, bb, bt = box.lrbt
-        self.ax = Axes(x_range=list(xr), y_range=list(yr), x_length=br - bl, y_length=bt - bb,
-                       tips=tips, axis_config={"color": DIM, "stroke_width": 2, "include_numbers": False})
-        self.ax.move_to([(bl + br) / 2, (bb + bt) / 2, 0])
-        self.add(self.ax)
-        if numbers:
-            nums = VGroup()
-            for v in np.arange(xr[0], xr[1] + 1e-9, xr[2]):
-                if abs(v) > 1e-9:
-                    nums.add(mt(_num(round(v, 6)), size=20, color=DIM).next_to(self.ax.c2p(v, yr[0]), DOWN, 0.1))
-            for v in np.arange(yr[0], yr[1] + 1e-9, yr[2]):
-                if abs(v) > 1e-9:
-                    nums.add(mt(_num(round(v, 6)), size=20, color=DIM).next_to(self.ax.c2p(xr[0], v), LEFT, 0.1))
-            self.add(nums)
-        if x_label:
-            self.add(mt(x_label, size=24, color=DIM).next_to(self.ax.x_axis.get_end(), DR, buff=0.08))
-        if y_label:
-            self.add(mt(y_label, size=24, color=DIM).next_to(self.ax.y_axis.get_end(), UL, buff=0.08))
-        self.xr, self.yr = xr, yr
-
-    def p(self, x, y) -> np.ndarray:
-        return self.ax.c2p(x, y)
+        super().__init__(box, xr, yr, x_label=x_label, y_label=y_label, numbers="xy" if numbers else "",
+                         tips=tips)
 
     def graph(self, f, color=YELLOW_E, x0=None, x1=None, width=3, add=True):
-        x0 = self.xr[0] if x0 is None else x0
-        x1 = self.xr[1] if x1 is None else x1
-        g = self.ax.plot(f, x_range=[x0, x1, (x1 - x0) / 300], color=color, stroke_width=width,
-                         use_smoothing=False)
-        if add:
-            self.add(g)
-        return mark_overlay(g)
+        return self.curve(f, color=color, x0=x0, x1=x1, width=width, n=300, add=add)
 
     def band(self, f, eps, color=GREEN_E, x0=None, x1=None, opacity=0.18, add=True):
         """関数 f のまわりの幅 ε の帯 {(x, y) : |y − f(x)| < ε}."""
@@ -302,28 +275,10 @@ class PlotMob(LiveGroup):
         return self.band(lambda x: y, eps, color=color, opacity=opacity, add=add)
 
     def vline(self, x, color=ORANGE_E, label: str | None = None, add=True):
-        L = DashedLine(self.p(x, self.yr[0]), self.p(x, self.yr[1]), color=color, stroke_width=2.5)
-        g = VGroup(L)
-        if label:
-            g.add(mt(label, size=24, color=color).next_to(L, DOWN, buff=0.08))
-        if add:
-            self.add(g)
-        return mark_overlay(g)
-
-    def hline(self, y, color=DIM, label: str | None = None, add=True):
-        L = DashedLine(self.p(self.xr[0], y), self.p(self.xr[1], y), color=color, stroke_width=2)
-        g = VGroup(L)
-        if label:
-            g.add(mt(label, size=24, color=color).next_to(L, LEFT, buff=0.08))
-        if add:
-            self.add(g)
-        return mark_overlay(g)
+        return super().vline(x, color=color, label=label, label_dir=DOWN, add=add)
 
     def dots(self, pts, color=YELLOW_E, radius=0.05, add=True):
-        g = VGroup(*[Dot(self.p(x, y), radius=radius, color=color) for x, y in pts])
-        if add:
-            self.add(g)
-        return mark_overlay(g)
+        return super().dots(pts, color=color, radius=radius, add=add)
 
 
 
