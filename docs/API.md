@@ -19,12 +19,14 @@ class MyScene(LectureScene):
 |---|---|---|
 | `title_card(title, subtitle)` | 冒頭のタイトル | `title:` |
 | `phase(kind, title)` | 見出し切替．kind は motivation / definition / example / proof / summary など（`PHASES` にある日本語ラベルになる）だが，これは数ある構成の1つ．登録のないキーはそのまま見出しの文字になるので，証明以外の動画は好きな文字列でよい | `phase:<title>` |
-| `note(text, block=True)` | 画面下の字幕．`block=False` で読み上げ中に次へ（後で `wait_voice()`） | `note:<text>` |
+| `note(text, block=True, kind="note", speaker=)` | 画面下の字幕．`block=False` で読み上げ中に次へ（後で `wait_voice()`） | `note:<text>` |
+| `ask(text, ...)` | 視聴者目線の素朴な疑問を `speaker2` で投げる（2人読み，下記） | `ask:<text>` |
 | `define(sym, meaning, target=, math=True, short=)` | 記号・用語を指し示して記号メモへ．`short` はメモ用の短い説明 | `def:<sym>` |
 | `recall(sym)` | 記号メモの該当項目を光らせる | — |
 | `explain(parts, at=, size=, order=, keep=)` | 式を1項ずつ説明．parts = `[(tex, 説明, 色, action), ...]`．説明なしの項は `("=",)` | `ex:<説明>` |
+| `morph(frm, to, because=)` | 式 frm を to に連続的に変形（`ReplacementTransform`）．`because` で変形の根拠を一言添える | — |
 | `count_up(mobs, color=)` | 番号を振って数える（番号の VGroup を返す．後で FadeOut） | — |
-| `speak(text, kind="say")` / `wait_voice()` | 任意の場面での読み上げ／待ち | `say:<text>` |
+| `speak(text, kind="say", speaker=)` / `wait_voice()` | 任意の場面での読み上げ／待ち．`speaker` で既定話者以外に切り替え | `say:<text>` |
 | `show(*mobs, overlay=False)` | 表示（横はみ出しは自動縮小） | — |
 | `steps_at(...)`, `step(*parts)` | 箇条書きを積む（溢れたら自動スクロール） | — |
 | `overlay(*mobs)` | 重なり検査の対象外にする（ハイライト等） | — |
@@ -201,8 +203,23 @@ Narfi（自然演繹の証明記述言語）風に証明をデータで書き，
 ## 音声（`lecanim.voice`）
 
 - `yomi(text)`：読み上げ文 → エンジンに渡す文（`$...$` の TeX を読みに，辞書置換，空白除去）
-- `synth(spoken)` → WAV（キャッシュ），`kana(spoken)` → エンジンの解釈したカナ，`credit()`
+- `synth(spoken, speaker=)` → WAV（キャッシュ），`kana(spoken, speaker=)` → エンジンの解釈したカナ，`credit(speaker2=)`
 - 辞書の適用順：プロジェクトの `yomi.toml` → 分野モジュールの `register_words()` → 汎用の `BASE_WORDS`
+- 読みの誤りを機械的に見つける（`lecanim yomi scan`，`lecanim qa` にも組み込み済み）：
+  `yomi.scan_texts`（VOICEVOX 自身の誤読：UniDic の読みと VOICEVOX の読みが違う語），
+  `yomi.scan_dict_vs_corpus`（辞書そのものの誤り：登録した語の読みが，台本中の実際の文脈での UniDic の読みと違う．
+  「値」→「あたい」のような1文字の汎用規則が「期待値」のような複合語に合わない，という登録漏れを拾う）。
+  どちらも偽陽性があり得る（UniDic が専門用語を誤読することがある）ので，`lecanim yomi ok 語` で確認済みとして記録する。
+
+### 2人読み（質問役・解説役）
+
+- シーンのクラス本体で `speaker2 = <話者ID>`（例：3＝ずんだもん）を設定すると，`ask(text)` がその話者で読む。
+  `note()`/`explain()` など他のメソッドは既定の話者（`lecanim.toml` の `[voice]`）のまま＝解説役。
+  `speaker2` 未設定で `ask()` を呼ぶと警告（既定話者にフォールバック）。
+- 台本は `narration.py` に `"ask:<字幕の先頭>"` キーで書く（`note()` の `"note:..."` と別枠）．
+  質問役は解説役の説明をなぞらず，視聴者が引っかかりそうな一言（本質的な疑問）だけを短く聞く：
+  前提を共有しない「初めて聞く人」の役であって，もう1人の解説者ではない。
+- `end_card()` のクレジットは自動で両方の話者名を表示する（`credit(self.speaker2)`）。
 
 ## プロジェクトの構成
 

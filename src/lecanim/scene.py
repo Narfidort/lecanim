@@ -42,6 +42,7 @@ class LectureScene(Scene):
     lecture = ""      # 例 "第2回 Ramsey理論"（パンくず表示）
     chapter = ""      # YouTube チャプター名（空なら topic）
     topic = ""        # 例 "R(3,3)=6"
+    speaker2: int | None = None   # 2人読みの質問役の話者ID（ask() 参照）．None なら1人読み
 
     def setup(self):
         self._qa_msgs: dict[str, float] = {}
@@ -126,10 +127,11 @@ class LectureScene(Scene):
             self._qa_msgs.setdefault(f"台本なし: {key[:40]}", self.renderer.time)
         return None
 
-    def speak(self, text: str, kind: str = "say") -> float:
+    def speak(self, text: str, kind: str = "say", speaker: int | None = None) -> float:
         """場面 kind の台本を読み上げ始める (前の音声が終わるまで待つ). 音声の長さを返す.
         kind=None なら text をそのまま読む. 台本の〔名前〕は合図：その位置を読み始める時刻が cue(名前) で取れる
-        （合図がなくても，文の頭が s0, s1, …，終わりが end で取れる）."""
+        （合図がなくても，文の頭が s0, s1, …，終わりが end で取れる）.
+        speaker を指定すると既定の話者（lecanim.toml の [voice]）の代わりにその話者で読む（2人読み，ask() 参照）."""
         if kind is not None:
             text = self.narr(kind, text)
         self._flush_cue_report()
@@ -140,17 +142,18 @@ class LectureScene(Scene):
         self._cues = {}
         if not VOICE_ON:
             return 0.0
+        sp = speaker if speaker is not None else _voice.SPEAKER
         t = self.renderer.time
         if t < self._voice_end:
             self.wait(self._voice_end - t)
             t = self.renderer.time
         if QA_MODE:
             self._story_capture()
-        tl = self._timeline(text)
+        tl = self._timeline(text, sp)
         if QA_MODE:
             d = tl["duration"]
         else:
-            path = _voice.synth(_voice.yomi(text))
+            path = _voice.synth(_voice.yomi(text), speaker=sp)
             d = _voice.duration(path)
             self.add_sound(str(path))
         self._cues = {k: t + v for k, v in tl["cues"].items()}
@@ -163,9 +166,9 @@ class LectureScene(Scene):
         self._story_pending = _voice.strip_cues(text)
         return d
 
-    def _timeline(self, text: str) -> dict:
+    def _timeline(self, text: str, speaker: int | None = None) -> dict:
         try:
-            return _voice.timeline(text)
+            return _voice.timeline(text, speaker=speaker if speaker is not None else _voice.SPEAKER)
         except Exception:                                      # noqa: BLE001  エンジンに届かない：文字数から概算
             spoken, cues = _voice.prepare(text)
             d = 0.145 * len(spoken) + 0.2
@@ -246,8 +249,9 @@ class LectureScene(Scene):
                 self.wait(rest)
 
     def note(self, text: str, wait: float | None = None, color=None, say: str | None = None,
-             block: bool = True):
-        """字幕＋ナレーション. say を与えると読み上げだけ別の文にできる."""
+             block: bool = True, kind: str = "note", speaker: int | None = None):
+        """字幕＋ナレーション. say を与えると読み上げだけ別の文にできる.
+        speaker を指定すると既定の話者の代わりにその話者で読む（2人読みの解説役／質問役，ask() 参照）."""
         new = row(text, size=24, color=color or CAPTION)
         if new.width > 13:
             new.scale_to_fit_width(13)
@@ -257,7 +261,7 @@ class LectureScene(Scene):
         anims = [FadeOut(old)] if len(old) else []
         if VOICE_ON:
             self.wait_voice(0.1)
-            self.speak(say, kind=None) if say is not None else self.speak(text, kind="note")
+            self.speak(say, kind=None, speaker=speaker) if say is not None else self.speak(text, kind=kind, speaker=speaker)
             self.play(*anims, FadeIn(g), run_time=0.5)
             if not block:      # 読み上げ中に次のアニメーションへ (後で wait_voice)
                 return
@@ -265,9 +269,19 @@ class LectureScene(Scene):
             if wait:
                 self.wait(min(wait, 1.0))
         else:
-            self.speak(say, kind=None) if say is not None else self.speak(text, kind="note")
+            self.speak(say, kind=None, speaker=speaker) if say is not None else self.speak(text, kind=kind, speaker=speaker)
             self.play(*anims, FadeIn(g), run_time=0.5)
             self.wait(wait if wait is not None else 1.3 + 0.1 * len(text))
+
+    def ask(self, text: str, wait: float | None = None, say: str | None = None, block: bool = True):
+        """視聴者目線の素朴な疑問を，解説役（既定の話者）とは別の話者（`speaker2`）で投げる．
+        2人構成にする回は，シーンのクラス本体で `speaker2 = <話者ID>` を設定する（例：3＝ずんだもん）．
+        記憶を共有しない「質問役」：相手の解説をなぞらず，視聴者が引っかかりそうな一言を聞くだけに使う．
+        台本は narration.py に `"ask:<字幕の先頭>"` のキーで書く（note() の `"note:..."` と別枠）．"""
+        if self.speaker2 is None:
+            self._qa_msgs.setdefault("[W] ask() には speaker2 の設定が必要（1人読みにフォールバック）",
+                                     self.renderer.time)
+        return self.note(text, wait=wait, color=ACCENT, say=say, block=block, kind="ask", speaker=self.speaker2)
 
     def clear_caption(self):
         if len(self.caption):
@@ -474,14 +488,15 @@ class LectureScene(Scene):
         print(f"[QA] {type(self).__name__}: {len(lines_)} warning(s) -> {f}", file=sys.stderr)
 
     def _sync_report(self):
-        """音声と画面の動きのずれ：合図に遅れた／音声の間ずっと画面が動かない."""
+        """音声と画面の動きのずれ：合図に遅れた／音声の間ずっと画面が動かない．
+        しきい値は「視聴者が遅れに気付く」側に寄せて厳しめにしてある（docs/STYLE.md §3.8）."""
         for name, target, actual in self._sync_log:
             late = actual - target
-            if late > 0.5:
-                self._qa_msgs.setdefault(f"[{'E' if late > 1.5 else 'W'}] 合図 {name} に {late:.1f} 秒遅れた"
+            if late > 0.3:
+                self._qa_msgs.setdefault(f"[{'E' if late > 1.0 else 'W'}] 合図 {name} に {late:.1f} 秒遅れた"
                                          f"（その前の動きが長すぎる）", target)
         for t0, t1, label in self._speeches:
-            if t1 - t0 < 8:
+            if t1 - t0 < 5:
                 continue
             cur, gap = t0, 0.0
             for a, b in sorted(self._busy):
@@ -490,8 +505,9 @@ class LectureScene(Scene):
                 gap = max(gap, max(a, t0) - cur)
                 cur = max(cur, min(b, t1))
             gap = max(gap, t1 - cur)
-            if gap > 7:
-                self._qa_msgs.setdefault(f"[W] 音声が続く {gap:.0f} 秒のあいだ画面が動かない: {label}", t0)
+            if gap > 4:
+                self._qa_msgs.setdefault(f"[{'E' if gap > 6 else 'W'}] 音声が続く {gap:.0f} 秒のあいだ画面が"
+                                         f"動かない: {label}", t0)
 
     def _sync_timeline(self, name: str):
         """音声と画面の動きの対応表（qa_reports/<シーン>.sync.txt）：台本の合図の時刻と，その時刻に始まった動き."""
@@ -821,6 +837,21 @@ class LectureScene(Scene):
             self.play(FadeOut(tex))
         return tex
 
+    def morph(self, frm: Mobject, to: Mobject, because: str | None = None, run_time: float = 1.0) -> Mobject:
+        """式 frm を式 to に置き換える（1行ずつの式変形）．FadeOut→FadeIn の瞬間切り替えではなく，
+        frm の形が to の形へ連続的に変わる様子を見せる（docs/STYLE.md §3.7「ミニマルに」の例外：
+        式変形そのものが主役の場面でだけ使う）．because を与えると，何を使った変形か（定義・前の結果・仮定）を
+        一言添える（STYLE.md §1.5：結果だけ見せて根拠を省かない）．to の位置はあらかじめ決めておくこと．
+        返り値は to（frm は消費される）．"""
+        anims = [ReplacementTransform(frm, to)]
+        if because:
+            tag = jp(because, size=20, color=DIM).next_to(to, UP, buff=0.12)
+            tag.set_x(np.clip(tag.get_x(), -6.9 + tag.width / 2, 6.9 - tag.width / 2))
+            self.overlay(tag)
+            anims.append(FadeIn(tag, shift=DOWN * 0.08))
+        self.play(*anims, run_time=run_time)
+        return to
+
     def count_up(self, mobs, color=ACCENT, size=26, run_time_each=0.35, at=None):
         """対象に 1, 2, 3, … と番号を振って数える. 番号の VGroup を返す (後で FadeOut)."""
         nums = VGroup()
@@ -921,7 +952,7 @@ class LectureScene(Scene):
             self.wait_voice(0.3) if VOICE_ON else self.wait(0.9)
         self.body.add(items)
         if VOICE_ON:
-            cr = jp(_voice.credit(), size=18, color=DIM).to_corner(DR, buff=0.3)
+            cr = jp(_voice.credit(self.speaker2), size=18, color=DIM).to_corner(DR, buff=0.3)
             self.add(cr)
         self.speak("", kind="outro")
         self.wait_voice(0.3)
