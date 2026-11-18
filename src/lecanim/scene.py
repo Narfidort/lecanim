@@ -190,11 +190,30 @@ class LectureScene(Scene):
         self._sync_log.append((name, target, self.renderer.time))
         return True
 
-    def pulse(self, *mobs, color=None, scale: float = 1.06) -> None:
-        """音声が続くあいだ，文の頭ごとに mobs を光らせる（説明が続く場面で画面が止まらないように）."""
-        names = sorted((n for n in self._cues if re.fullmatch(r"s[1-9]\d*", n)), key=self._cues.get)
-        for n in names:
-            if self._cues[n] - self.renderer.time > 0.8 and self._cues.get("end", 0) - self._cues[n] > 1.0:
+    def pulse(self, *mobs, color=None, scale: float = 1.06, every: float = 3.5) -> None:
+        """音声が続くあいだ，合図と合図のあいだが空きすぎている区間を mobs を光らせて埋める
+        （説明が続く場面で画面が止まらないように）．名前つきの合図（cue() が使う分）と文の頭（s0, s1, …）・
+        終わりをまとめて landmark とし，隣り合う landmark の間が `every` 秒を超えたら，均等な点を自分で
+        作って埋める．**まだどの cue() も呼んでいない状態**（note()/speak() の直後）で呼ぶこと：
+        最初の合図より前の無音は，その合図を待つ cue() が時間を進めてしまった後では埋められない
+        （句点や台本の合図だけに頼ると，長い1文の途中が無音のまま残るため．docs/STYLE.md §3.8）."""
+        end = self._cues.get("end")
+        if end is None:
+            return
+        # 台本にまだ使っていない名前つきの合図（〔a〕など）が残っているなら，その手前までしか埋めない．
+        # そうしないと，このあとの scene コード自身が待つはずの cue("a") の時刻まで一気に進めてしまう．
+        pending = [self._cues[n] for n in (self._cue_names - self._cue_used) if n in self._cues]
+        cap = min(pending) if pending else end
+        marks = sorted({m for m in self._cues.values() if m <= cap} | {self._speech_t0, cap})
+        names = []
+        for a, b in zip(marks, marks[1:]):
+            k = int((b - a) // every)
+            for i in range(1, k + 1):
+                nm = f"_pulse{len(names)}"
+                self._cues[nm] = a + i * every
+                names.append(nm)
+        for n in sorted(names, key=self._cues.get):
+            if self._cues[n] - self.renderer.time > 0.8 and end - self._cues[n] > 1.0:
                 self.cue(n)
                 self.play(*[Indicate(m, color=color or ACCENT, scale_factor=scale) for m in mobs], run_time=0.7)
 
@@ -823,6 +842,8 @@ class LectureScene(Scene):
             self.overlay(br, lab)
             self.wait_voice(0.1)
             self.speak(note, kind="ex")
+            if VOICE_ON:
+                self.pulse(sub, color=col)       # cue() より前に：最初の合図より前の無音も埋めるため
             self.cue("hl")                       # 台本の〔hl〕：項を色付けして括弧と説明を出す（既定は読み始め）
             self.play(sub.animate.set_opacity(1).set_color(col), GrowFromCenter(br), FadeIn(lab), run_time=0.6)
             if action:
@@ -949,7 +970,11 @@ class LectureScene(Scene):
             self.wait_voice(0.1)
             self.speak(p if isinstance(p, str) else "", kind="end")
             self.play(FadeIn(it, shift=RIGHT * 0.2), run_time=0.6)
-            self.wait_voice(0.3) if VOICE_ON else self.wait(0.9)
+            if VOICE_ON:
+                self.pulse(it, every=2.5)   # 長い要約文でも，文の頭ごとにその項目を光らせて間を持たせる
+                self.wait_voice(0.3)
+            else:
+                self.wait(0.9)
         self.body.add(items)
         if VOICE_ON:
             cr = jp(_voice.credit(self.speaker2), size=18, color=DIM).to_corner(DR, buff=0.3)
