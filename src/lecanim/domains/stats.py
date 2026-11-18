@@ -151,17 +151,34 @@ class ProjectionMob(LiveGroup):
 
 # ============================================================ 行列・ベクトルの分割
 class BlockMatrixMob(LiveGroup):
-    """行列・ベクトルを矩形として並べる（Y=Xβ+ε の次元，X=[X1|X2]，2×2 の分割行列）."""
+    """行列・ベクトルを矩形として並べる（Y=Xβ+ε の次元，X=[X1|X2]，2×2 の分割行列）．
+    矩形の幅・高さは呼び出し側が決める任意の数値ではなく，実際の行数・列数から unit で計算する．
+    対応する次元（X の列数と β の行数など）に同じ数を渡せば，矩形の大きさが自動的に揃う．
+    N のような大きい次元は見た目用の小さい代表値でよいが，対応する辺同士は必ず同じ値にする．"""
 
-    def __init__(self):
+    def __init__(self, unit: float = 0.55, min_size: float = 0.85):
         super().__init__()
+        self.unit, self.min = unit, min_size
 
-    def col_blocks(self, specs, h: float = 2.2, gap: float = 0.0):
-        """specs = [(label, width, color), ...] を横に並べた1つの行列として描く（境界に細い線）."""
+    def _len(self, n: float) -> float:
+        return max(self.min, n * self.unit)
+
+    @staticmethod
+    def _fit(lbl, box, pad: float = 0.12):
+        """ラベルが矩形からはみ出す（列数1本のような細い箱に長い式）ときだけ縮める．"""
+        if lbl.width > box.width - 2 * pad:
+            lbl.scale_to_fit_width(box.width - 2 * pad)
+        if lbl.height > box.height - 2 * pad:
+            lbl.scale_to_fit_height(box.height - 2 * pad)
+        return lbl
+
+    def col_blocks(self, specs, gap: float = 0.0):
+        """specs = [(label, rows, cols, color), ...] を横に並べた1つの行列として描く（境界に細い線）．"""
         g = VGroup()
-        for lab, w, color in specs:
-            r = Rectangle(width=w, height=h, color=color, stroke_width=2, fill_color=color, fill_opacity=0.08)
-            lbl = _label(lab, size=28, color=FG)
+        for lab, rows, cols, color in specs:
+            r = Rectangle(width=self._len(cols), height=self._len(rows), color=color, stroke_width=2,
+                          fill_color=color, fill_opacity=0.08)
+            lbl = self._fit(_label(lab, size=28, color=FG), r)
             g.add(VGroup(r, lbl))
         g.arrange(RIGHT, buff=gap)
         for cell in g:
@@ -169,14 +186,18 @@ class BlockMatrixMob(LiveGroup):
         self.add(g)
         return mark_overlay(g)
 
-    def grid2x2(self, w1: float, w2: float, h1: float, h2: float, labels, colors=None):
-        """2×2 のブロック行列 [[A11,A12],[A21,A22]]．labels は4要素（左上→右上→左下→右下）."""
+    def grid2x2(self, rows, cols, labels, colors=None):
+        """2×2 のブロック行列 [[A11,A12],[A21,A22]]．rows=(行数1,行数2), cols=(列数1,列数2)．
+        labels は4要素（左上→右上→左下→右下）．"""
         colors = colors or [MAIN] * 4
-        specs = [(w1, h1), (w2, h1), (w1, h2), (w2, h2)]
+        r1, r2 = rows
+        c1, c2 = cols
+        dims = [(r1, c1), (r1, c2), (r2, c1), (r2, c2)]
         cells = []
-        for (w, h), lab, color in zip(specs, labels, colors):
-            r = Rectangle(width=w, height=h, color=color, stroke_width=2, fill_color=color, fill_opacity=0.08)
-            lbl = _label(lab, size=26, color=FG).move_to(r)
+        for (rn, cn), lab, color in zip(dims, labels, colors):
+            r = Rectangle(width=self._len(cn), height=self._len(rn), color=color, stroke_width=2,
+                          fill_color=color, fill_opacity=0.08)
+            lbl = self._fit(_label(lab, size=26, color=FG), r).move_to(r)
             cells.append(VGroup(r, lbl))
         top = VGroup(cells[0], cells[1]).arrange(RIGHT, buff=0)
         bot = VGroup(cells[2], cells[3]).arrange(RIGHT, buff=0)

@@ -163,10 +163,15 @@ Narfi（自然演繹の証明記述言語）風に証明をデータで書き，
   これらの関数を渡すと `foot` を動かしたときに自動で追従する矢印を作る（`label` は `style.label()` の規則）．
   `right_angle()` は足にある直角の印（追従する）．
   `set_foot(fx, fy)` で足を動かすアニメーションを返す（分割回帰・過剰定式化で Ŷ が変わる様子に使う）．
-- `BlockMatrixMob()`：行列・ベクトルを矩形として並べる．`col_blocks([(label, width, color), ...], h=)`（X=[X1|X2] の
-  ような横並びの分割），`grid2x2(w1, w2, h1, h2, labels, colors=)`（2×2 の分割行列），
+- `BlockMatrixMob(unit=, min_size=)`：行列・ベクトルを矩形として並べる．矩形の幅・高さは呼び出し側が決める
+  任意の数値ではなく，渡した**実際の行数・列数**から `unit` で計算する（対応する次元に同じ数を渡せば矩形の大きさが
+  自動的に揃う．N のような大きい次元は見た目用の小さい代表値でよい．ラベルが箱からはみ出す場合だけ自動で縮める）：
+  `col_blocks([(label, rows, cols, color), ...], gap=)`（X=[X1|X2] のような横並びの分割），
+  `grid2x2(rows=(r1, r2), cols=(c1, c2), labels, colors=)`（2×2 の分割行列．`labels` は左上→右上→左下→右下），
   `eq(*parts, box=)`（col_blocks/grid2x2 の結果と `"="`/`"+"` のような文字列を式として並べ box に収める）．
-  いずれの `label` も `style.label()` の規則．
+  いずれの `label` も `style.label()` の規則。例：`Y=Xβ+ε`（`N×1`，`N×(K+1)`，`(K+1)×1`，`N×1`）なら
+  `col_blocks([("X", N, K+1, MAIN)])` の列数 `K+1` と `col_blocks([(r"\beta", K+1, 1, FG)])` の行数 `K+1` を
+  同じ値にすると，X の幅と β の高さが自動的に一致する．
 - `DistMob(box, xr, yr, x_label=)`：`AxesMob` を継承．検定統計量の分布のグラフ．`density(pdf)`（`curve` の薄いラッパ），
   `tail(pdf, x0, x1)`（棄却域の塗り，`area` のラッパ），`stat_mark(x0, label=)`（検定統計量の実現値の縦線，`vline`
   のラッパ），`hline(y, label=)` は `AxesMob` からそのまま．`normal_pdf/chi2_pdf/t_pdf/f_pdf` は対数空間で計算する
