@@ -228,6 +228,58 @@ def scan_texts(items: list[tuple[str, str]], speaker: int | None = None) -> dict
     return res
 
 
+_MAX_COMPOUND_TOKENS = 4    # 辞書の語がまたぐ UniDic トークン数の上限（"半正定値"で3語）
+
+
+def _pipeline_spans(toks: list[tuple[str, str]], pats: dict[str, str]) -> list[tuple[int, int, str]]:
+    """yomi() の `s.replace(a, b)`（長い語から順）を模して，辞書の語がどのトークン範囲を消費するかを求める．
+    戻り値は [(開始トークン番号, 終了トークン番号, マッチした語), ...]（消費済みトークンは再チェックしない）."""
+    spans, i, n = [], 0, len(toks)
+    while i < n:
+        hit = None
+        for k in range(min(_MAX_COMPOUND_TOKENS, n - i), 0, -1):      # 長い語を優先（yomi() と同じ順）
+            sf = "".join(t[0] for t in toks[i:i + k])
+            if sf in pats:
+                hit = (k, sf)
+                break
+        if hit:
+            k, sf = hit
+            spans.append((i, i + k, sf))
+            i += k
+        else:
+            i += 1
+    return spans
+
+
+def scan_dict_vs_corpus(items: list[tuple[str, str]]) -> dict[str, dict]:
+    """自分の読み辞書の語が，実際の台本の文脈での UniDic の読みと食い違っていないか確認する．
+    「値」→「あたい」のような1文字の汎用規則は，「期待値」のような複合語の中では UniDic 曰く別の読み（例：ち）に
+    なることがある（最小値・絶対値は既に例外登録済みだが，登録し忘れた語をここで機械的に拾う）．
+    辞書は長い語から先に適用される（voice.yomi() と同じ優先順位）ので，「固有値」を登録済みならその中の
+    「値」単独の規則は実際には使われない：その消費関係を再現してから比べる．
+    scan_texts は VOICEVOX 自身の誤読しか拾えない（辞書で既に書き換えた後の文字列しか見ないため）ので，
+    これは辞書そのものの誤りを拾う別の軸のチェック."""
+    from . import voice as v
+    _import_domains()
+    pats = dict(v.words())
+    res: dict[str, dict] = {}
+    ign = _ignored()
+    for where, text in items:
+        raw = v.strip_cues(text)
+        for seg in raw.split("$")[::2]:          # TeX部分（奇数番目）は別ルートで読みに変換されるので対象外
+            toks = analyze(seg)
+            for i, j, sf in _pipeline_spans(toks, pats):
+                if sf in ign:
+                    continue
+                r = "".join(t[1] for t in toks[i:j])
+                if not r or norm_kana(pats[sf]) == norm_kana(r):
+                    continue
+                e = res.setdefault(sf, {"dict": pats[sf], "unidic": r, "where": []})
+                if where not in e["where"]:
+                    e["where"].append(where)
+    return res
+
+
 def verify_entries(root: Path | None = None) -> list[tuple[str, str, str, str]]:
     """例文つきの辞書項目を VOICEVOX で読ませ，読みが期待どおりか確かめる. 失敗した [(語, 読み, 例文, 実際の読み)]."""
     from . import voice as v
@@ -271,13 +323,21 @@ def cmd_yomi(a):
                 if t:
                     items.append((f"{sc} {k[:14]}", t))
         res = scan_texts(items)
-        if not res:
+        dres = scan_dict_vs_corpus(items)
+        if not res and not dres:
             print("UniDic と VOICEVOX の読みの食い違いはありません")
             return
-        print(f"読みの食い違い {len(res)} 語（UniDic と VOICEVOX が違う．どちらが正しいか確認し，直すなら "
-              "`lecanim yomi add 語 読み`，このままなら `lecanim yomi ok 語`）")
-        for s, e in sorted(res.items(), key=lambda x: -len(x[1]["where"])):
-            print(f"  {s:<10} UniDic: {e['unidic']:<14} VOICEVOX: {e['voicevox']:<14} …{e['context']}…  ({len(e['where'])} 箇所)")
+        if res:
+            print(f"読みの食い違い {len(res)} 語（UniDic と VOICEVOX が違う．どちらが正しいか確認し，直すなら "
+                  "`lecanim yomi add 語 読み`，このままなら `lecanim yomi ok 語`）")
+            for s, e in sorted(res.items(), key=lambda x: -len(x[1]["where"])):
+                print(f"  {s:<10} UniDic: {e['unidic']:<14} VOICEVOX: {e['voicevox']:<14} …{e['context']}…  ({len(e['where'])} 箇所)")
+        if dres:
+            print(f"辞書の読みが文脈と食い違う {len(dres)} 語（自分の辞書の読みが，台本中の実際の文脈での UniDic の読みと"
+                  "違う．複合語の例外登録漏れの疑い。`lecanim yomi add 語 読み` で上書きするか，このままなら "
+                  "`lecanim yomi ok 語`）")
+            for s, e in sorted(dres.items(), key=lambda x: -len(x[1]["where"])):
+                print(f"  {s:<10} 辞書: {e['dict']:<14} UniDic: {e['unidic']:<14} ({len(e['where'])} 箇所)")
         sys.exit(1 if a.strict else 0)
     elif sub == "verify":
         bad = verify_entries(root)

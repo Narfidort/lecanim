@@ -474,6 +474,13 @@ def run_qa(r: Path, jobs: list, n_jobs: int, verbose: bool = False) -> int:
         print(f"  読みの食い違い {len(flagged)} 語（直すなら `lecanim yomi add 語 読み`，このままなら `lecanim yomi ok 語`）")
         for sf, e in sorted(flagged.items(), key=lambda x: -len(x[1]["where"]))[:20]:
             print(f"    {sf}  UniDic:{e['unidic']}  VOICEVOX:{e['voicevox']}  …{e['context']}…  {e['where'][0]}")
+    dflagged = Y.scan_dict_vs_corpus(items) if items else {}
+    if dflagged:
+        n_err += len(dflagged)
+        print(f"  辞書の読みが文脈と食い違う {len(dflagged)} 語（複合語の例外登録漏れの疑い．"
+              "`lecanim yomi add 語 読み` で上書きするか，このままなら `lecanim yomi ok 語`）")
+        for sf, e in sorted(dflagged.items(), key=lambda x: -len(x[1]["where"]))[:20]:
+            print(f"    {sf}  辞書:{e['dict']}  UniDic:{e['unidic']}  {e['where'][0]}")
     print(f"合計：エラー {n_err}，注意 {n_warn}" + ("" if n_err == 0 else "  ← 書き出しの前に直す"))
     return n_err + (1 if any(c for _, c in res) else 0)
 
